@@ -61,15 +61,6 @@ export async function processSopUpload(formData: FormData) {
         pathMeta.identifierFromPath ||
         extractIdentifierFromFilename(pathMeta.fileName || file.name);
 
-      // Resolve name: explicit input → folder-segment title → filename title →
-      // document content → fall back to identifier so name is never empty.
-      // Content extraction runs after the buffer is read below; we store a
-      // sentinel here and overwrite it once content is available.
-      const nameFromFile =
-        nameInput ||
-        pathMeta.titleFromPath ||
-        nameFromFilename(pathMeta.fileName || file.name);
-
       const version =
         versionInput ||
         pathMeta.versionFromPath ||
@@ -89,10 +80,18 @@ export async function processSopUpload(formData: FormData) {
       const buffer = Buffer.from(await file.arrayBuffer());
       const content = await extractTextFromBuffer(buffer, fileType);
 
-      // Final name resolution: try document content for DOCX, fall back to identifier.
+      // Name resolution (runs after content extraction so the document's own
+      // title — the authoritative source — can win over the filename guess):
+      //   explicit input → folder-segment title → DOCX content title →
+      //   filename-derived title → identifier (so name is never empty).
+      // The filename is only a fallback because it often carries junk tokens
+      // (revision/language suffixes like "Rev 02", "GUJ", "Final") that would
+      // otherwise be mistaken for the title.
       const name =
-        nameFromFile ||
+        nameInput ||
+        pathMeta.titleFromPath ||
         (fileType === "docx" ? extractTitleFromContent(content, identifier) : null) ||
+        nameFromFilename(pathMeta.fileName || file.name) ||
         identifier;
 
       const { fileUrl, checksum, fileSize } = await saveUploadedFile(

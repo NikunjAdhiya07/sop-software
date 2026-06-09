@@ -37,18 +37,20 @@ export async function backfillSopNames() {
       continue;
     }
 
-    // 1. Try to extract from the original filename
-    const fromFile = record.originalFileName
-      ? nameFromFilename(record.originalFileName)
-      : "";
-
-    // 2. Try to extract from stored document content (DOCX only — PDF extraction is unreliable)
+    // 1. Prefer the stored document content (DOCX only — PDF extraction is
+    //    unreliable). The document's own title is the authoritative source.
     const fromContent =
       record.fileType === "docx" && record.content
         ? extractTitleFromContent(record.content, record.identifier)
         : null;
 
-    const newName = fromFile || fromContent || null;
+    // 2. Fall back to the original filename (often carries junk revision/
+    //    language tokens, so it sits below the content title).
+    const fromFile = record.originalFileName
+      ? nameFromFilename(record.originalFileName)
+      : "";
+
+    const newName = fromContent || fromFile || null;
 
     if (!newName || nameIsJustCode(newName, record.identifier)) {
       skipped++;

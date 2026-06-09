@@ -8,7 +8,11 @@ import {
   parseFiltersFromSearchParams,
   sopVersionFields,
 } from "@/lib/sop-utils";
-import { invalidateDashboardSopsCache } from "@/lib/cache";
+import {
+  getServerGroupedCache,
+  invalidateDashboardSopsCache,
+  setServerGroupedCache,
+} from "@/lib/cache";
 import { requireAuth } from "@/lib/withAuth";
 
 export async function GET(request: NextRequest) {
@@ -16,10 +20,14 @@ export async function GET(request: NextRequest) {
   if (auth.error) return auth.error;
 
   try {
-    await connectDB();
     const filters = parseFiltersFromSearchParams(request.nextUrl.searchParams);
-    const records = await SOP.find({}).sort({ updatedAt: -1 }).lean();
-    const grouped = groupSOPRecords(records as never[]);
+    let grouped = getServerGroupedCache();
+    if (!grouped) {
+      await connectDB();
+      const records = await SOP.find({}).sort({ updatedAt: -1 }).lean();
+      grouped = groupSOPRecords(records as never[]);
+      setServerGroupedCache(grouped);
+    }
     const filtered = applyFilters(grouped, filters);
     const { items, total } = paginate(filtered, filters.page, filters.limit);
 

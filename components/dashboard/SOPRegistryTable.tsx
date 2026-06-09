@@ -182,7 +182,7 @@ export function SOPRegistryTable({
       : <ArrowDown className="h-3 w-3 text-purple-600 ml-0.5 inline" />;
   };
 
-  const thBase = "px-1 py-0.5 align-top text-[9px] font-bold text-gray-600 uppercase tracking-wide whitespace-normal wrap-break-word";
+  const thBase = "sticky top-0 z-20 bg-gray-100 px-1 py-0.5 align-top text-[9px] font-bold text-gray-600 uppercase tracking-wide whitespace-normal wrap-break-word";
   const selBase = "w-full text-[8px] p-px border border-gray-300 rounded bg-white focus:outline-none focus:border-purple-500 cursor-pointer leading-tight";
   const sortBtn = "flex w-full items-center gap-0.5 rounded px-0.5 py-1 text-left font-bold uppercase tracking-wide text-gray-600 hover:bg-purple-50/80 hover:text-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-400";
 
@@ -273,10 +273,10 @@ export function SOPRegistryTable({
           </span>
         </div>
 
-        {/* Table */}
+        {/* Table — scrolls internally with a sticky header */}
         <div
-          className="w-full overflow-auto overscroll-contain"
-          style={{ scrollbarGutter: "stable both-edges", contain: "content" }}
+          className="w-full overflow-auto overscroll-contain max-h-[calc(100vh-180px)]"
+          style={{ scrollbarGutter: "stable both-edges" }}
         >
           <table className="w-full min-w-max table-fixed text-left border-collapse">
             <thead className="bg-gray-100 border-b border-gray-300">
@@ -411,25 +411,6 @@ export function SOPRegistryTable({
             </tbody>
           </table>
         </div>
-
-        {/* Pagination */}
-        {total > (filters.limit ?? 50) && (
-          <div className="flex items-center justify-between border-t border-gray-200 px-3 py-2">
-            <span className="text-[10px] text-gray-500">
-              Page {filters.page} of {Math.ceil(total / (filters.limit ?? 50))}
-            </span>
-            <div className="flex gap-1">
-              <Btn size="xs" disabled={(filters.page ?? 1) <= 1}
-                onClick={() => setFilter({ page: (filters.page ?? 1) - 1 })}>
-                Previous
-              </Btn>
-              <Btn size="xs" disabled={(filters.page ?? 1) >= Math.ceil(total / (filters.limit ?? 50))}
-                onClick={() => setFilter({ page: (filters.page ?? 1) + 1 })}>
-                Next
-              </Btn>
-            </div>
-          </div>
-        )}
       </div>
     </section>
   );

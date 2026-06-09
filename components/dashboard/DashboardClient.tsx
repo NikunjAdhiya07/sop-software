@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import type { DashboardStats, RegistrySOP } from "@/lib/types";
-import { bustDashboardCache } from "@/lib/cache";
+import {
+  DASHBOARD_CACHE_KEY,
+  DASHBOARD_STATS_CACHE_KEY,
+  bustDashboardCache,
+  readClientCache,
+  writeClientCache,
+} from "@/lib/cache";
 import { filtersToQuery, useDashboardStore } from "@/lib/store/dashboard-store";
 import { canMutate, isAdmin } from "@/lib/roles";
 import type { AppRole } from "@/lib/auth";
@@ -67,11 +73,23 @@ export function DashboardClient() {
     const data = await res.json();
     setStats(data);
     setDepartmentList(data.departmentList ?? []);
+    writeClientCache(DASHBOARD_STATS_CACHE_KEY, "stats", data);
   }, []);
 
   const fetchSops = useCallback(async () => {
-    setLoading(true);
     setError(null);
+    // Stale-while-revalidate: paint cached rows instantly, then refetch.
+    const cached = readClientCache<{ items: RegistrySOP[]; total: number }>(
+      DASHBOARD_CACHE_KEY,
+      query,
+    );
+    if (cached) {
+      setItems(cached.items);
+      setTotal(cached.total);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     try {
       const res = await fetch(`/api/sops?${query}`);
       if (!res.ok) {
@@ -81,10 +99,16 @@ export function DashboardClient() {
       const data = await res.json();
       setItems(data.items);
       setTotal(data.total);
+      writeClientCache(DASHBOARD_CACHE_KEY, query, {
+        items: data.items,
+        total: data.total,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
-      setItems([]);
-      setTotal(0);
+      if (!cached) {
+        setItems([]);
+        setTotal(0);
+      }
     } finally {
       setLoading(false);
     }
@@ -96,6 +120,14 @@ export function DashboardClient() {
   }, [fetchStats, fetchSops]);
 
   useEffect(() => {
+    const cachedStats = readClientCache<DashboardStats & { departmentList?: string[] }>(
+      DASHBOARD_STATS_CACHE_KEY,
+      "stats",
+    );
+    if (cachedStats) {
+      setStats(cachedStats);
+      setDepartmentList(cachedStats.departmentList ?? []);
+    }
     fetchStats().catch((e) => setError(e.message));
   }, [fetchStats]);
 

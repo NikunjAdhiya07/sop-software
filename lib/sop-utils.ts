@@ -16,6 +16,11 @@ import type {
   RegistrySOP,
   SOPFilters,
 } from "@/lib/types";
+import {
+  hasGujaratiScript,
+  isPlaceholderSopName,
+  resolveSopFamilyNames,
+} from "@/lib/sop-name-resolution";
 
 const NEAR_EXPIRY_DAYS = 90;
 const MEDIUM_EXPIRY_DAYS = 180;
@@ -62,8 +67,19 @@ function langKey(language?: string): "en" | "gu" {
 
 function resolveLanguage(records: ISOP[]): LanguageCode {
   const langs = new Set(records.map((r) => r.language ?? "English"));
-  if (langs.has("English") && langs.has("Gujarati")) return "ENG-GUJ";
-  if (langs.has("Gujarati")) return "GUJ";
+  const hasGujText = records.some(
+    (r) => r.name && hasGujaratiScript(r.name) && !isPlaceholderSopName(r.name, r.identifier),
+  );
+  const hasEngText = records.some(
+    (r) =>
+      r.name &&
+      !hasGujaratiScript(r.name) &&
+      !isPlaceholderSopName(r.name, r.identifier),
+  );
+  if ((langs.has("English") || hasEngText) && (langs.has("Gujarati") || hasGujText)) {
+    return "ENG-GUJ";
+  }
+  if (langs.has("Gujarati") || (hasGujText && !hasEngText)) return "GUJ";
   return "ENG";
 }
 
@@ -408,16 +424,9 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
       (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
     );
     const primary = sorted[0] ?? group[0];
-    const english =
-      currentRecords.find((r) => r.language !== "Gujarati") ??
-      group.find((r) => r.language !== "Gujarati") ??
-      primary;
-    const gujarati =
-      currentRecords.find((r) => r.language === "Gujarati") ??
-      group.find((r) => r.language === "Gujarati");
     const files = collectVersionFiles(currentRecords);
-    const language = resolveLanguage(currentRecords.length ? currentRecords : group);
-    const expiryDate = primary.expiryDate ?? english.expiryDate ?? gujarati?.expiryDate;
+    const language = resolveLanguage(group);
+    const expiryDate = primary.expiryDate ?? group.find((r) => r.expiryDate)?.expiryDate;
     const uploadedAt = currentRecords.reduce(
       (latest, r) =>
         new Date(r.uploadedAt) > new Date(latest) ? r.uploadedAt.toISOString() : latest,
@@ -434,12 +443,15 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
         return fromId && versionNumber(fromId) === versionNumber(currentVersion);
       })?.identifier ?? primary.identifier;
 
+    const versionRecords = currentRecords.length ? currentRecords : group;
+    const resolved = resolveSopFamilyNames(versionRecords, displayIdentifier);
+
     result.push({
       id: primary._id.toString(),
       recordIds: group.map((r) => r._id.toString()),
       identifier: displayIdentifier,
-      name: english.name,
-      nameGujarati: gujarati?.name !== english.name ? gujarati?.name : undefined,
+      name: resolved.englishName,
+      nameGujarati: resolved.gujaratiName,
       version: currentVersion,
       department: primary.department,
       location: primary.location,
@@ -1138,7 +1150,7 @@ export function sopVersionFields(identifier: string, storedVersion?: string | nu
 }
 
 // Lines that are never the SOP title — skip them when scanning document text.
-const TITLE_SKIP = /^(standard\s+operating\s+procedure|document\s+(no|number|title)|sop\s+(no|number|title)|revision|version\s+no|date\s+of|effective\s+date|approved\s+by|prepared\s+by|reviewed\s+by|page\s+\d|confidential|internal\s+use|copy\s+no)/i;
+const TITLE_SKIP = /^(standard\s+operating\s+procedure|document\s+(no|number|title)|sop\s+(no|number|title)|revision|version\s+no|date\s+of|effective\s+date|approved\s+by|prepared\s+by|reviewed\s+by|page\s+\d|confidential|internal\s+use|copy\s+no|objective\s*:?\s*)$/i;
 
 /**
  * Extract the SOP title from the first meaningful lines of extracted document text.
