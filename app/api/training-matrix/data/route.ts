@@ -1,0 +1,137 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { connectDB } from '@/lib/mongodb';
+import TrainingMatrixRecord from '@/models/TrainingMatrixRecord';
+import TrainingMatrixUpload from '@/models/TrainingMatrixUpload';
+import SOP from '@/models/SOP';
+
+const STATUS_PRIORITY: Record<string, number> = {
+  completed: 4,
+  pending: 3,
+  not_required: 2,
+  na: 1,
+};
+
+export async function GET(request: NextRequest) {
+  try {
+    await connectDB();
+    const sp = request.nextUrl.searchParams;
+
+    const dept      = sp.get('department') || 'all';
+    const monthP    = sp.get('month')      || 'all';
+    const yearP     = sp.get('year')       || 'all';
+    const search    = (sp.get('search')    || '').toLowerCase();
+    const sopSearch = (sp.get('sop')       || '').toLowerCase();
+    const desigF    = sp.get('designation')|| 'all';
+    const statusF   = sp.get('status')     || 'all';
+    const includeObsolete = sp.get('includeObsolete') === '1';
+
+    const match: Record<string, any> = {};
+    if (dept    !== 'all') match.department   = dept;
+    if (monthP  !== 'all') match.month        = parseInt(monthP);
+    if (yearP   !== 'all') match.year         = parseInt(yearP);
+    if (desigF  !== 'all') match.designation  = desigF;
+    if (search)            match.employeeName = { $regex: search, $options: 'i' };
+    if (sopSearch)         match.sopCode      = { $regex: sopSearch, $options: 'i' };
+    // Don't filter by status here — we need all statuses to build the employee map correctly
+
+    const stripVersion = (code: string) =>
+      String(code || '').toUpperCase().replace(/-\d+$/, '').trim();
+    const obsoleteBaseSet = new Set<string>();
+    if (!includeObsolete) {
+      const obs = await SOP.find({ isObsolete: true }, { identifier: 1 }).lean() as any[];
+      for (const r of obs) {
+        const base = stripVersion(String(r?.identifier || ''));
+        if (base) obsoleteBaseSet.add(base);
+      }
+    }
+
+    const recordsRaw = await TrainingMatrixRecord.find(match)
+      .sort({ department: 1, employeeName: 1, sopCode: 1 })
+      .lean();
+    const records = includeObsolete
+      ? recordsRaw
+      : (recordsRaw as any[]).filter((r: any) => !obsoleteBaseSet.has(stripVersion(String(r?.sopCode || ''))));
+
+    // Build employee map with SOP matrix
+    // Key: department||employeeName
+    // For each SOP, keep the highest-priority status across all months
+    const empMap: Record<string, {
+      employeeName: string;
+      designation: string;
+      department: string;
+      trainings: Record<string, { status: string; raw: string; priority: number }>;
+    }> = {};
+
+    const sopSet = new Set<string>();
+
+    for (const r of records) {
+      // Skip na records — they contribute nothing to counts
+      if (r.status === 'na') continue;
+
+      const key = `${r.department}||${r.employeeName}`;
+      if (!empMap[key]) {
+        empMap[key] = { employeeName: r.employeeName, designation: r.designation, department: r.department, trainings: {} };
+      }
+
+      const priority = STATUS_PRIORITY[r.status] ?? 0;
+      const existing = empMap[key].trainings[r.sopCode];
+
+      // Only update if this status has higher priority than existing
+      if (!existing || priority > existing.priority) {
+        empMap[key].trainings[r.sopCode] = { status: r.status, raw: r.rawSymbol, priority };
+      }
+
+      sopSet.add(r.sopCode);
+    }
+
+    const employees = Object.values(empMap).map(emp => {
+      const trainingValues = Object.values(emp.trainings);
+      const completed    = trainingValues.filter(t => t.status === 'completed').length;
+      const not_required = trainingValues.filter(t => t.status === 'not_required').length;
+      const pending      = trainingValues.filter(t => t.status === 'pending').length;
+      const required     = completed + pending;
+      const totalSOPs    = required + not_required; // Total = Required + Not Required (no NA)
+      const pct          = required > 0 ? Math.round((completed / required) * 100) : 0;
+
+      // Strip out the priority field before returning
+      const trainings: Record<string, { status: string; raw: string }> = {};
+      for (const [sop, t] of Object.entries(emp.trainings)) {
+        trainings[sop] = { status: t.status, raw: t.raw };
+      }
+
+      return { ...emp, trainings, completed, not_required, na: 0, pending, required, totalSOPs, completionPct: pct };
+    });
+
+    // Apply status filter after building (filter employees by status presence)
+    const filteredEmployees = statusF !== 'all'
+      ? employees.filter(e => Object.values(e.trainings).some(t => t.status === statusF))
+      : employees;
+
+    const sopCodes = [...sopSet].sort();
+
+    // Filter options
+    const departments   = await TrainingMatrixRecord.distinct('department');
+    const years         = (await TrainingMatrixRecord.distinct('year')).sort();
+    const designations  = await TrainingMatrixRecord.distinct('designation', dept !== 'all' ? { department: dept } : {});
+    const monthsRaw     = await TrainingMatrixRecord.aggregate([
+      { $group: { _id: { month: '$month', monthName: '$monthName' } } },
+      { $sort: { '_id.month': 1 } },
+    ]);
+    const months = monthsRaw.map(m => ({ month: m._id.month, monthName: m._id.monthName }));
+
+    // Upload history
+    const uploads = await TrainingMatrixUpload.find(dept !== 'all' ? { department: dept } : {})
+      .sort({ uploadedAt: -1 }).limit(20).lean();
+
+    return NextResponse.json({
+      success: true,
+      employees: filteredEmployees,
+      sopCodes,
+      filters: { departments, years, months, designations },
+      uploads,
+      total: records.length,
+    });
+  } catch (error: any) {
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}

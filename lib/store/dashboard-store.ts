@@ -47,7 +47,8 @@ const defaultFilters: SOPFilters = {
   sortBy: "identifier",
   sortDir: "asc",
   page: 1,
-  limit: 50,
+  // No pagination — the table scrolls internally, so load every match.
+  limit: 100000,
 };
 
 export const useDashboardStore = create<DashboardState>((set) => ({
