@@ -19,7 +19,6 @@ import type {
 
 const NEAR_EXPIRY_DAYS = 90;
 const MEDIUM_EXPIRY_DAYS = 180;
-const LOW_EXPIRY_DAYS = 365;
 
 export function getExpiryTier(expiryDate?: Date | string | null): ExpiryTier {
   if (!expiryDate) return "none";
@@ -28,8 +27,10 @@ export function getExpiryTier(expiryDate?: Date | string | null): ExpiryTier {
   if (days < 0) return "expired";
   if (days <= NEAR_EXPIRY_DAYS) return "high";
   if (days <= MEDIUM_EXPIRY_DAYS) return "medium";
-  if (days <= LOW_EXPIRY_DAYS) return "low";
-  return "none";
+  // Any valid future date counts as "low" urgency — including far-future dates
+  // beyond LOW_EXPIRY_DAYS. "none" is reserved for SOPs with no expiry date at all
+  // (guarded above), so they aren't miscounted as "No Date".
+  return "low";
 }
 
 export function formatExpiryLabel(expiryDate?: Date | string | null): string {
@@ -466,26 +467,50 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
 }
 
 function buildPriorVersions(group: ISOP[], currentVersion: string) {
-  const versions = new Map<
-    string,
-    { version: string; language: string; docx?: string; pdf?: string }
-  >();
   const currentNum = versionNumber(currentVersion);
 
+  // Map uploaded prior-version files by "<versionNumber>-<lang>".
+  const uploaded = new Map<string, { docx?: string; pdf?: string }>();
   for (const record of group) {
-    const ver = recordVersion(record);
-    if (recordVersionNum(record) >= currentNum) continue;
-
+    const num = recordVersionNum(record);
+    if (num >= currentNum) continue;
     const lang = record.language === "Gujarati" ? "GUJ" : "ENG";
-    const key = `${ver}-${lang}`;
-    const entry = versions.get(key) ?? { version: ver, language: lang };
+    const key = `${num}-${lang}`;
+    const entry = uploaded.get(key) ?? {};
     applyRecordFileLinks(record, entry);
-    versions.set(key, entry);
+    uploaded.set(key, entry);
   }
 
-  return Array.from(versions.values()).sort(
-    (a, b) => versionNumber(b.version) - versionNumber(a.version),
-  );
+  // Always surface the two versions immediately below the current one (e.g. v5 → v4, v3),
+  // per language the SOP family uses. Uploaded versions get file links; the rest are flagged
+  // as missing so the table can show "not found". This updates automatically as new versions
+  // are uploaded (the previous current version drops in here with its files).
+  const familyLang = resolveLanguage(group);
+  const familyLangs = familyLang === "ENG-GUJ" ? ["ENG", "GUJ"] : [familyLang];
+  const top = Math.floor(currentNum) - 1;
+  const bottom = Math.max(1, top - 1);
+
+  const result: Array<{
+    version: string;
+    language: string;
+    docx?: string;
+    pdf?: string;
+    missing?: boolean;
+  }> = [];
+
+  for (const lang of familyLangs) {
+    for (let v = top; v >= bottom; v--) {
+      const files = uploaded.get(`${v}-${lang}`);
+      if (files && (files.docx || files.pdf)) {
+        result.push({ version: String(v), language: lang, docx: files.docx, pdf: files.pdf });
+      } else {
+        result.push({ version: String(v), language: lang, missing: true });
+      }
+    }
+  }
+
+  // Newest first.
+  return result.sort((a, b) => versionNumber(b.version) - versionNumber(a.version));
 }
 
 export function applyFilters(items: RegistrySOP[], filters: SOPFilters): RegistrySOP[] {
@@ -779,7 +804,10 @@ export function buildDashboardStats(registry: RegistrySOP[]): DashboardStats {
     guidelinesTotal: active.filter((s) => s.guidelineReference).length,
     guidelinesAnalyzed: active.filter((s) => s.complianceStatus !== "pending").length,
     departments: [buildCapsule("Total", active), ...deptCapsules],
-    priorVersionCount: active.reduce((s, r) => s + r.priorVersions.length, 0),
+    priorVersionCount: active.reduce(
+      (s, r) => s + r.priorVersions.filter((pv) => !pv.missing).length,
+      0,
+    ),
   };
 }
 

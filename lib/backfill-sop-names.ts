@@ -11,8 +11,11 @@ function nameIsJustCode(name: string, identifier: string): boolean {
   const n = name.trim().toUpperCase().replace(/[-_\s]/g, "");
   const b = base.replace(/[-_\s]/g, "");
   const id = identifier.trim().toUpperCase().replace(/[-_\s]/g, "");
-  // Matches if the stored name is the full identifier, the base code, or just code-with-spaces
-  return n === id || n === b || /^[A-Z]{2,}[A-Z0-9]*\d*$/.test(n);
+  // Matches if the stored name is the full identifier, the base code, or just code-with-spaces.
+  // An SOP code is letters followed by at least one digit (e.g. PEGE01, QAGE0205); the trailing
+  // digit requirement prevents pure-letter titles ("Medical Check Up" → "MEDICALCHECKUP") from
+  // being misclassified as a bare code.
+  return n === id || n === b || /^[A-Z]{2,}\d+[A-Z0-9]*$/.test(n);
 }
 
 /**

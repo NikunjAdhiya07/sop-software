@@ -9,31 +9,34 @@ interface DepartmentCapsulesProps {
   capsules: DepartmentCapsule[];
 }
 
-/* ─── Pill pair: green | red ─────────────────────────────────────────── */
-function AvailMissPill({
-  available, missing, onAvailableClick, onMissingClick,
+/* ─── Green | red value pill box (reference styling) ──────────────────── */
+function PillBox({
+  available, missing, onAvailableClick, onMissingClick, minW = "1.35rem",
 }: {
   available: number; missing: number;
   onAvailableClick?: () => void; onMissingClick?: () => void;
+  minW?: string;
 }) {
   return (
-    <div className="inline-flex shrink-0 items-center rounded-md border border-gray-200/90 bg-white/95 shadow-sm tabular-nums">
+    <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-gray-200/90 bg-white/95 px-0.5 py-px shadow-sm tabular-nums">
       <button type="button"
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); onAvailableClick?.(); }}
-        className="min-w-[1.2rem] cursor-pointer rounded-l px-1 py-0 text-center text-[10px] font-bold leading-none text-emerald-700 hover:bg-emerald-50 focus:outline-none">
+        style={{ minWidth: minW }}
+        className="cursor-pointer rounded px-1 py-0.5 text-center text-[10px] font-bold leading-none text-emerald-700 transition-colors hover:bg-emerald-50 focus:z-10 focus:outline-none focus:ring-1 focus:ring-emerald-500/70">
         {available}
       </button>
-      <span className="select-none text-[8px] font-light text-gray-300 leading-none px-px" aria-hidden>|</span>
+      <span className="select-none text-[8px] font-light text-gray-300" aria-hidden>|</span>
       <button type="button"
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMissingClick?.(); }}
-        className="min-w-[1.2rem] cursor-pointer rounded-r px-1 py-0 text-center text-[10px] font-bold leading-none text-red-600 hover:bg-red-50 focus:outline-none">
+        style={{ minWidth: minW }}
+        className="cursor-pointer rounded px-1 py-0.5 text-center text-[10px] font-bold leading-none text-red-600 transition-colors hover:bg-red-50 focus:z-10 focus:outline-none focus:ring-1 focus:ring-red-400/70">
         {missing}
       </button>
     </div>
   );
 }
 
-/* ─── Metric row with available | missing pill ───────────────────────── */
+/* ─── Metric row with label + green|red pill (reference grid layout) ──── */
 function MetricAvailMiss({
   label, available, missing, onLabelClick, onAvailableClick, onMissingClick,
 }: {
@@ -41,13 +44,13 @@ function MetricAvailMiss({
   onLabelClick?: () => void; onAvailableClick?: () => void; onMissingClick?: () => void;
 }) {
   return (
-    <div className="flex w-full items-center justify-between px-0 py-0">
+    <div className="grid min-h-[26px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[5px] border border-transparent px-1 py-px text-[10px]">
       <button type="button"
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); onLabelClick?.(); }}
-        className="min-w-0 cursor-pointer text-left text-[10px] font-semibold text-gray-700 hover:text-purple-800 focus:outline-none">
+        className="-mx-0.5 min-w-0 cursor-pointer truncate rounded px-0.5 text-left text-gray-600 transition-colors hover:text-purple-800 focus:z-10 focus:outline-none focus:ring-1 focus:ring-purple-400">
         {label}
       </button>
-      <AvailMissPill
+      <PillBox
         available={available} missing={missing}
         onAvailableClick={onAvailableClick} onMissingClick={onMissingClick}
       />
@@ -59,27 +62,26 @@ function MetricAvailMiss({
 function MetricRow({
   label, value, valueClass, onClick, isActive,
 }: {
-  label: string; value: number; valueClass?: string;
+  label: ReactNode; value: number; valueClass?: string;
   onClick?: () => void; isActive?: boolean;
 }) {
   return (
     <button type="button"
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClick?.(); }}
-      className={`flex w-full cursor-pointer items-center justify-between gap-1 rounded-sm px-1 py-0.5 text-left focus:outline-none ${
-        isActive
-          ? "border border-purple-400 bg-purple-100/90"
-          : "border border-transparent hover:bg-purple-100/80"
+      aria-pressed={isActive ? true : undefined}
+      className={`flex min-h-[24px] w-full cursor-pointer items-center justify-between gap-1.5 rounded-[4px] px-1 py-0.5 text-left text-[10px] transition-colors hover:bg-purple-100/80 active:bg-purple-200/60 focus:z-10 focus:outline-none focus:ring-1 focus:ring-purple-400 ${
+        isActive ? "border border-purple-400 bg-purple-100/90" : "border border-transparent"
       }`}
     >
-      <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap">{label}</span>
-      <span className={`text-[11px] font-bold tabular-nums ${valueClass ?? "text-gray-900"}`}>
+      <span className="min-w-0 shrink overflow-hidden text-ellipsis whitespace-nowrap text-gray-600">{label}</span>
+      <span className={`shrink-0 font-bold leading-tight tabular-nums ${valueClass ?? "text-gray-900"}`}>
         {value}
       </span>
     </button>
   );
 }
 
-/* ─── Lang pair sub-row: L1 X|Y  L2 X|Y ─────────────────────────────── */
+/* ─── Lang pair sub-row: L1 X|Y  L2 X|Y (reference styling) ──────────── */
 function LangPairPills({
   l1, f1, m1, l2, f2, m2,
   onF1, onM1, onF2, onM2,
@@ -89,34 +91,47 @@ function LangPairPills({
   onF1?: () => void; onM1?: () => void;
   onF2?: () => void; onM2?: () => void;
 }) {
-  const pill = (
-    f: number, m: number,
+  const pair = (
+    lang: string, f: number, m: number,
     onF?: () => void, onM?: () => void,
   ) => (
-    <div className="inline-flex shrink-0 items-center rounded-md border border-gray-200/80 bg-white/90 shadow-sm tabular-nums">
-      <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onF?.(); }}
-        className="min-w-[1.2rem] cursor-pointer rounded-l px-0.5 py-0 text-center text-[10px] font-bold leading-tight text-emerald-700 hover:bg-emerald-50 focus:outline-none">{f}</button>
-      <span className="select-none px-px text-[7px] text-gray-300 leading-tight">|</span>
-      <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onM?.(); }}
-        className="min-w-[1.2rem] cursor-pointer rounded-r px-0.5 py-0 text-center text-[10px] font-bold leading-tight text-red-600 hover:bg-red-50 focus:outline-none">{m}</button>
+    <div className="flex items-center gap-0.5">
+      <span className="min-w-fit text-[9px] font-medium text-gray-500">{lang}</span>
+      <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-gray-200/80 bg-white/90 px-0.5 py-0.5 shadow-sm tabular-nums">
+        <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onF?.(); }}
+          className="min-w-[1.3rem] cursor-pointer rounded px-0.5 py-0 text-center text-[10px] font-bold leading-tight text-emerald-700 transition-colors hover:bg-emerald-50 focus:outline-none focus:ring-1 focus:ring-emerald-400">{f}</button>
+        <span className="select-none text-[7px] leading-tight text-gray-300">|</span>
+        <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onM?.(); }}
+          className="min-w-[1.3rem] cursor-pointer rounded px-0.5 py-0 text-center text-[10px] font-bold leading-tight text-red-600 transition-colors hover:bg-red-50 focus:outline-none focus:ring-1 focus:ring-red-400">{m}</button>
+      </div>
     </div>
   );
 
   return (
-    <div className="flex w-full items-center justify-between px-0 py-0 text-[9px]">
-      <div className="flex items-center gap-0.5">
-        <span className="text-gray-500 text-[9px] font-medium">{l1}</span>
-        {pill(f1, m1, onF1, onM1)}
-      </div>
-      <div className="flex items-center gap-0.5">
-        <span className="text-gray-500 text-[9px] font-medium">{l2}</span>
-        {pill(f2, m2, onF2, onM2)}
-      </div>
+    <div className="flex min-h-[22px] w-full items-center justify-between gap-1 px-1 py-0 text-[9px]">
+      {pair(l1, f1, m1, onF1, onM1)}
+      {pair(l2, f2, m2, onF2, onM2)}
     </div>
   );
 }
 
-/* ─── Version pair row ────────────────────────────────────────────────── */
+/* ─── Format-labelled lang pair sub-row (DOCX/PDF + EN/GJ pills) ──────── */
+function FormatLangPairRow({
+  formatLabel, l1, f1, m1, l2, f2, m2,
+}: {
+  formatLabel: string;
+  l1: string; f1: number; m1: number;
+  l2: string; f2: number; m2: number;
+}) {
+  return (
+    <div className="mt-0.5 flex min-h-[20px] w-full items-center justify-between gap-1 px-1 py-0 text-[9px]">
+      <span className="inline-block w-[30px] shrink-0 font-medium text-gray-400">{formatLabel}</span>
+      <LangPairPills l1={l1} f1={f1} m1={m1} l2={l2} f2={f2} m2={m2} />
+    </div>
+  );
+}
+
+/* ─── Version pair row (label + green|red pill) ──────────────────────── */
 function VersionPairRow({
   label, found, missing, onLabelClick, onFoundClick, onMissingClick,
 }: {
@@ -124,20 +139,14 @@ function VersionPairRow({
   onLabelClick?: () => void; onFoundClick?: () => void; onMissingClick?: () => void;
 }) {
   return (
-    <div className="flex w-full items-center justify-between gap-1 px-0 py-0">
-      <button type="button"
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onLabelClick?.(); }}
-        className="min-w-0 cursor-pointer text-left text-[10px] font-semibold text-gray-700 hover:text-purple-800 focus:outline-none">
-        {label}
-      </button>
-      <div className="inline-flex shrink-0 items-center rounded-md border border-gray-200/90 bg-white/95 shadow-sm tabular-nums">
-        <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onFoundClick?.(); }}
-          className="min-w-[1.2rem] cursor-pointer rounded-l px-1 py-0 text-center text-[10px] font-bold leading-none text-emerald-700 hover:bg-emerald-50 focus:outline-none">{found}</button>
-        <span className="select-none px-px text-[8px] font-light text-gray-300 leading-none" aria-hidden>|</span>
-        <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMissingClick?.(); }}
-          className="min-w-[1.2rem] cursor-pointer rounded-r px-1 py-0 text-center text-[10px] font-bold leading-none text-red-600 hover:bg-red-50 focus:outline-none">{missing}</button>
-      </div>
-    </div>
+    <MetricAvailMiss
+      label={label}
+      available={found}
+      missing={missing}
+      onLabelClick={onLabelClick}
+      onAvailableClick={onFoundClick}
+      onMissingClick={onMissingClick}
+    />
   );
 }
 
@@ -153,7 +162,7 @@ function DepartmentCard({
   const label = cap.department;
 
   return (
-    <div className={`flex w-full min-w-0 flex-col rounded-[10px] border px-2.5 py-2.5 text-left shadow-sm ${
+    <div className={`flex w-full min-w-0 flex-col rounded-[10px] border px-2 py-1.5 text-left shadow-sm ${
       isTotal ? "border-purple-300 bg-purple-50" : "border-gray-200 bg-white"
     }`}>
       {/* Card header */}
@@ -165,25 +174,24 @@ function DepartmentCard({
           if (isTotal) return;
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onFilter({}); }
         }}
-        className={`mb-2 flex items-center gap-1 border-b pb-1.5 ${
+        className={`mb-2 flex min-h-[40px] w-full items-start gap-1.5 rounded-md border-b pb-2 ${
           isTotal
             ? "cursor-default border-purple-200"
             : `cursor-pointer border-gray-100 hover:bg-purple-50/80 focus:outline-none focus:ring-2 focus:ring-purple-400 ${
-                isSelected ? "bg-purple-50/60" : ""
+                isSelected ? "border-purple-300 bg-purple-100/70 ring-1 ring-purple-300" : ""
               }`
         }`}
         title={isTotal ? "Totals across all departments" : `Show all ${label} SOPs`}
       >
-        <FileText className="h-3 w-3 shrink-0 text-purple-600" />
-        <span className="min-w-0 flex-1 text-[10px] font-bold leading-tight text-gray-800">
+        <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-purple-600" />
+        <span className="min-w-0 flex-1 text-[11px] font-bold leading-tight text-gray-800 break-words">
           {label}
         </span>
       </div>
 
-      {/* Metrics — tight rows, no gaps between them */}
-      <div className="flex flex-col gap-0.5">
+      {/* Metrics */}
+      <div className="flex flex-col gap-0 border-t border-transparent pt-0.5">
 
-        {/* SOPs — highlighted when this card's filter is active */}
         <MetricRow
           label="SOPs" value={cap.total}
           onClick={() => onFilter({})}
@@ -194,18 +202,18 @@ function DepartmentCard({
         <MetricRow label="w/ GU" value={cap.withGu ?? cap.dualLanguage} onClick={() => onFilter({ language: "GUJ" })} />
 
         {/* Expiry row: 3 compact columns */}
-        <div className="flex w-full gap-0">
-          <div className="flex-1 min-w-0">
+        <div className="flex w-full gap-0.5">
+          <div className="min-w-0 flex-1">
             <MetricRow label="Expir." value={cap.expired}
               valueClass={cap.expired > 0 ? "text-red-600" : "text-gray-700"}
               onClick={() => onFilter({ expiry: "Expired" })} />
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="min-w-0 flex-1">
             <MetricRow label="Near" value={cap.nearExpiry}
               valueClass={cap.nearExpiry > 0 ? "text-amber-600" : "text-gray-700"}
               onClick={() => onFilter({ expiry: "Near" })} />
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="min-w-0 flex-1">
             <MetricRow label="No Dt" value={cap.noDate}
               onClick={() => onFilter({ expiry: "No Date" })} />
           </div>
@@ -247,9 +255,8 @@ function DepartmentCard({
           onM2={() => onFilter({ fileType: "No PDF", language: "GUJ" })}
         />
 
-        <div className="h-2" />
-
         {/* Versions */}
+        <div className="h-1" />
         <VersionPairRow
           label="Versions"
           found={cap.version.found} missing={cap.version.missing}
@@ -257,26 +264,19 @@ function DepartmentCard({
           onFoundClick={() => onFilter({ versionStatus: "found" })}
           onMissingClick={() => onFilter({ versionStatus: "missing" })}
         />
-        {/* DOCX versions per-lang */}
-        <div className="flex w-full items-center gap-0 py-0">
-          <span className="text-[9px] font-medium text-gray-400 w-[26px] shrink-0">DOCX</span>
-          <LangPairPills
-            l1="EN" f1={cap.docx.en.found} m1={cap.docx.en.missing}
-            l2="GJ" f2={cap.docx.gu.found} m2={cap.docx.gu.missing}
-          />
-        </div>
-        {/* PDF versions per-lang */}
-        <div className="flex w-full items-center gap-0 py-0">
-          <span className="text-[9px] font-medium text-gray-400 w-[26px] shrink-0">PDF</span>
-          <LangPairPills
-            l1="EN" f1={cap.pdf.en.found} m1={cap.pdf.en.missing}
-            l2="GJ" f2={cap.pdf.gu.found} m2={cap.pdf.gu.missing}
-          />
-        </div>
-
-        <div className="h-2" />
+        <FormatLangPairRow
+          formatLabel="DOCX"
+          l1="EN" f1={cap.docx.en.found} m1={cap.docx.en.missing}
+          l2="GJ" f2={cap.docx.gu.found} m2={cap.docx.gu.missing}
+        />
+        <FormatLangPairRow
+          formatLabel="PDF"
+          l1="EN" f1={cap.pdf.en.found} m1={cap.pdf.en.missing}
+          l2="GJ" f2={cap.pdf.gu.found} m2={cap.pdf.gu.missing}
+        />
 
         {/* Version Dates */}
+        <div className="h-1" />
         <VersionPairRow
           label="Version Dates"
           found={cap.versionDate.found} missing={cap.versionDate.missing}
@@ -289,13 +289,12 @@ function DepartmentCard({
           l2="GUJ" f2={cap.versionDate.gu?.found ?? 0} m2={cap.versionDate.gu?.missing ?? 0}
         />
 
-        <div className="h-2" />
-
         {/* Videos */}
+        <div className="h-1" />
         <MetricAvailMiss
           label={
             <span className="inline-flex items-center gap-0.5">
-              <Video className="h-2.5 w-2.5 shrink-0" aria-hidden />
+              <Video className="h-3 w-3 shrink-0" aria-hidden />
               Videos
             </span>
           }
@@ -304,7 +303,6 @@ function DepartmentCard({
           onAvailableClick={() => onFilter({ media: "Video" })}
           onMissingClick={() => onFilter({ media: "No Video" })}
         />
-        {/* Videos ENG / GUJ sub-row */}
         <LangPairPills
           l1="ENG" f1={cap.videos.en?.available ?? 0} m1={cap.videos.en?.missing ?? 0}
           l2="GUJ" f2={cap.videos.gu?.available ?? 0} m2={cap.videos.gu?.missing ?? 0}
@@ -314,13 +312,12 @@ function DepartmentCard({
           onM2={() => onFilter({ media: "No Video", language: "GUJ" })}
         />
 
-        <div className="h-2" />
-
-        {/* Slides — no ENG/GUJ sub-row (matches reference) */}
+        {/* Slides */}
+        <div className="h-1" />
         <MetricAvailMiss
           label={
             <span className="inline-flex items-center gap-0.5">
-              <Presentation className="h-2.5 w-2.5 shrink-0" aria-hidden />
+              <Presentation className="h-3 w-3 shrink-0" aria-hidden />
               Slides
             </span>
           }
@@ -372,36 +369,31 @@ export function DepartmentCapsules({ capsules }: DepartmentCapsulesProps) {
         </span>
       </button>
 
-      {/* Cards */}
+      {/* Cards — responsive wrapping grid (reference layout) */}
       {sectionOpen && (
-        <div className="border-t border-gray-100 bg-gray-100 px-2 py-1 sm:px-3">
-          <div className="min-w-0 overflow-x-auto">
-            <div
-              className="grid gap-2"
-              style={{ gridTemplateColumns: `repeat(${capsules.length}, minmax(150px, 190px))` }}
-            >
-              {capsules.map((cap) => (
-                <DepartmentCard
-                  key={cap.department}
-                  cap={cap}
-                  isSelected={
-                    cap.department === "Total"
-                      ? !activeDept
-                      : activeDept === cap.department
-                  }
-                  onFilter={(patch) => applyFilter(cap.department, patch)}
-                />
-              ))}
-            </div>
+        <div className="border-t border-gray-100 bg-gray-50 px-1 py-2 sm:px-2">
+          <div className="grid w-full grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 2xl:grid-cols-8">
+            {capsules.map((cap) => (
+              <DepartmentCard
+                key={cap.department}
+                cap={cap}
+                isSelected={
+                  cap.department === "Total"
+                    ? !activeDept
+                    : activeDept === cap.department
+                }
+                onFilter={(patch) => applyFilter(cap.department, patch)}
+              />
+            ))}
+          </div>
 
-            <div className="mt-1 flex justify-end">
-              <button
-                type="button"
-                className="flex items-center gap-1 rounded border border-dashed border-gray-300 px-2 py-0.5 text-[10px] text-gray-500 hover:border-purple-400 hover:text-purple-600"
-              >
-                <Plus className="h-3 w-3" /> Add Department
-              </button>
-            </div>
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              className="flex items-center gap-1 rounded border border-dashed border-gray-300 px-2 py-0.5 text-[10px] text-gray-500 hover:border-purple-400 hover:text-purple-600"
+            >
+              <Plus className="h-3 w-3" /> Add Department
+            </button>
           </div>
         </div>
       )}

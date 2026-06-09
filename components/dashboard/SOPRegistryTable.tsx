@@ -581,7 +581,7 @@ const SOPRow = memo(function SOPRow({
         </td>
 
         {/* Files */}
-        <td className="pl-1 pr-3 py-px align-middle text-left">
+        <td className="px-1 py-px align-middle text-center">
           <FilesCell sop={sop} />
         </td>
 
@@ -693,14 +693,14 @@ function FilesCell({ sop }: { sop: RegistrySOP }) {
 
   if (!hasGu) {
     return (
-      <div className="flex w-max flex-col gap-px text-left leading-none">
+      <div className="mx-auto flex w-max flex-col gap-px text-left leading-none">
         {renderLangRow("ENG", sop.files.docx.en, sop.files.pdf.en)}
       </div>
     );
   }
 
   return (
-    <div className="flex w-max flex-col gap-px text-left leading-none">
+    <div className="mx-auto flex w-max flex-col gap-px text-left leading-none">
       {renderLangRow("ENG", sop.files.docx.en, sop.files.pdf.en)}
       {renderLangRow("GUJ", sop.files.docx.gu, sop.files.pdf.gu)}
     </div>
@@ -758,10 +758,14 @@ function FileLink({
 }
 
 /* ─── Prior versions cell ─────────────────────────────────────────────── */
+/** How many of the most recent prior versions to show per language. */
+const MAX_PRIOR_VERSIONS = 2;
+
 function PriorVersionsCell({ sop }: { sop: RegistrySOP }) {
   const isDual = sop.language === "ENG-GUJ";
-  const engVersions = sop.priorVersions.filter((pv) => pv.language === "ENG");
-  const gujVersions = sop.priorVersions.filter((pv) => pv.language === "GUJ");
+  // priorVersions arrive newest-first; keep only the latest few per language.
+  const engVersions = sop.priorVersions.filter((pv) => pv.language === "ENG").slice(0, MAX_PRIOR_VERSIONS);
+  const gujVersions = sop.priorVersions.filter((pv) => pv.language === "GUJ").slice(0, MAX_PRIOR_VERSIONS);
   const hasAny = sop.priorVersions.length > 0;
 
   if (!hasAny) {
@@ -774,37 +778,50 @@ function PriorVersionsCell({ sop }: { sop: RegistrySOP }) {
       <div className="flex flex-row flex-nowrap items-center gap-x-2 leading-none">
         <span className="text-[8px] font-bold uppercase text-gray-400 leading-none w-[18px] shrink-0">{subLabel}</span>
         <div className="flex flex-row flex-wrap gap-x-3 gap-y-0.5 items-center">
-          {pvs.map((pv) => (
-            <div key={`${pv.version}-${pv.language}`} className="flex flex-row items-center gap-0.5">
-              <span className="text-[9px] font-bold text-gray-700 leading-none whitespace-nowrap">V{pv.version}</span>
-              <div className="flex items-center gap-0.5 leading-none text-[8px] font-bold">
-                {pv.docx ? (
-                  <FileLink filePath={pv.docx} label="DOCX" />
-                ) : <span className="text-red-500" title="DOCX missing">DOCX</span>}
-                <span className="text-gray-300 select-none">/</span>
-                {pv.pdf ? (
-                  <FileLink filePath={pv.pdf} label="PDF" isPdf />
-                ) : <span className="text-red-500" title="PDF missing">PDF</span>}
+          {pvs.map((pv) =>
+            pv.missing ? (
+              <div
+                key={`${pv.version}-${pv.language}`}
+                className="flex flex-row items-center gap-0.5"
+                title={`Version ${pv.version} was never uploaded`}
+              >
+                <span className="text-[9px] font-bold text-gray-400 line-through leading-none whitespace-nowrap">V{pv.version}</span>
+                <span className="text-[8px] font-semibold italic text-amber-600 leading-none whitespace-nowrap">not found</span>
               </div>
-            </div>
-          ))}
+            ) : (
+              <div key={`${pv.version}-${pv.language}`} className="flex flex-row items-center gap-0.5">
+                <span className="text-[9px] font-bold text-green-700 leading-none whitespace-nowrap">V{pv.version}</span>
+                <div className="flex items-center gap-0.5 leading-none text-[8px] font-bold">
+                  {pv.docx ? (
+                    <FileLink filePath={pv.docx} label="DOCX" />
+                  ) : <span className="text-red-500" title="DOCX missing">DOCX</span>}
+                  <span className="text-gray-300 select-none">/</span>
+                  {pv.pdf ? (
+                    <FileLink filePath={pv.pdf} label="PDF" isPdf />
+                  ) : <span className="text-red-500" title="PDF missing">PDF</span>}
+                </div>
+              </div>
+            ),
+          )}
         </div>
       </div>
     );
   };
 
   if (isDual) {
+    const fallback = sop.priorVersions.slice(0, MAX_PRIOR_VERSIONS);
     return (
       <div className="flex flex-col gap-px py-0 leading-none">
         {engVersions.length > 0 && renderVersionRow(engVersions, "ENG")}
         {gujVersions.length > 0 && renderVersionRow(gujVersions, "GUJ")}
-        {engVersions.length === 0 && gujVersions.length === 0 && renderVersionRow(sop.priorVersions, "ENG")}
+        {engVersions.length === 0 && gujVersions.length === 0 && renderVersionRow(fallback, "ENG")}
       </div>
     );
   }
 
   const subLabel = sop.language === "GUJ" ? "GUJ" : "ENG";
-  return renderVersionRow(sop.priorVersions, subLabel);
+  const single = sop.priorVersions.slice(0, MAX_PRIOR_VERSIONS);
+  return renderVersionRow(single, subLabel);
 }
 
 /* ─── Video cell ─────────────────────────────────────────────────────── */
@@ -813,12 +830,15 @@ function VideoCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
   const guCount = sop.media.videos.gu;
   const totalCount = enCount + guCount;
 
-  if (!isDual && totalCount === 0) {
-    return <span className="text-gray-400 text-[9px]">0</span>;
-  }
-  if (!isDual && totalCount > 0) {
-    return (
+  const notFound = (
+    <span className="text-[8px] font-semibold italic text-amber-600 leading-none whitespace-nowrap">no video found</span>
+  );
+
+  if (!isDual) {
+    return totalCount > 0 ? (
       <span className="text-[10px] font-bold tabular-nums text-emerald-700">{totalCount}</span>
+    ) : (
+      notFound
     );
   }
 
@@ -831,7 +851,7 @@ function VideoCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
           {count}
         </span>
       ) : (
-        <span className="text-[8px] font-bold leading-none text-red-600 whitespace-nowrap">Video&nbsp;✗</span>
+        notFound
       )}
     </div>
   );
@@ -839,7 +859,7 @@ function VideoCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
   return (
     <div className="flex w-max flex-col gap-px text-left leading-none">
       {renderLangRow("ENG", enCount)}
-      {isDual && renderLangRow("GUJ", guCount)}
+      {renderLangRow("GUJ", guCount)}
     </div>
   );
 }
@@ -850,12 +870,15 @@ function SlidesCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
   const guCount = sop.media.slides.gu;
   const totalCount = enCount + guCount;
 
-  if (!isDual && totalCount === 0) {
-    return <span className="text-gray-400 text-[9px]">0</span>;
-  }
-  if (!isDual && totalCount > 0) {
-    return (
+  const notFound = (
+    <span className="text-[8px] font-semibold italic text-amber-600 leading-none whitespace-nowrap">no slides found</span>
+  );
+
+  if (!isDual) {
+    return totalCount > 0 ? (
       <span className="text-[10px] font-bold tabular-nums text-indigo-700">{totalCount}</span>
+    ) : (
+      notFound
     );
   }
 
@@ -869,7 +892,7 @@ function SlidesCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
           {count}
         </a>
       ) : (
-        <span className="text-[8px] font-bold leading-none text-red-600 whitespace-nowrap">Slides&nbsp;✗</span>
+        notFound
       )}
     </div>
   );
@@ -877,7 +900,7 @@ function SlidesCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
   return (
     <div className="flex w-max flex-col gap-px text-left leading-none">
       {renderLangRow("ENG", enCount)}
-      {isDual && renderLangRow("GUJ", guCount)}
+      {renderLangRow("GUJ", guCount)}
     </div>
   );
 }

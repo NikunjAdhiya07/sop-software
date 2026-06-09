@@ -51,6 +51,8 @@ export interface PriorVersion {
   language: string;
   docx?: string;
   pdf?: string;
+  /** True when this version is expected (below the current version) but was never uploaded. */
+  missing?: boolean;
 }
 
 export interface EditSOPFormData {

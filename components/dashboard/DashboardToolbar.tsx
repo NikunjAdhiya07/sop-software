@@ -15,6 +15,7 @@ import {
   Plus,
   Upload,
   Video,
+  Wrench,
 } from "lucide-react";
 import type { DashboardStats } from "@/lib/types";
 import { useDashboardStore } from "@/lib/store/dashboard-store";
@@ -44,6 +45,7 @@ export function DashboardToolbar({
     setLocationUploadOpen,
     setBunnyMigrateOpen,
     setVideoUploadOpen,
+    setAdminOpen,
     setFilter,
     filters,
     showToast,
@@ -219,6 +221,18 @@ export function DashboardToolbar({
         >
           <BarChart3 className="h-3 w-3" /> MCQ Bank
         </Btn>
+
+        {/* Admin Tools – admin only (includes Fix SOP Names backfill) */}
+        {isAdmin && (
+          <Btn
+            size="sm"
+            className="border-sky-300 bg-sky-50 text-sky-800 hover:bg-sky-100"
+            onClick={() => setAdminOpen(true)}
+            title="Admin tools: fix SOP names, migrate files, delete versioned SOPs"
+          >
+            <Wrench className="h-3 w-3" /> Admin Tools
+          </Btn>
+        )}
       </div>
     </div>
   );
