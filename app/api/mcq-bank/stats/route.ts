@@ -4,8 +4,9 @@ import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
 import User from "@/models/User";
 import { requireAuth } from "@/lib/withAuth";
+import { baseIdentifierFromIdentifier } from "@/lib/sop-utils";
 
-// ── Subcategory prefix → canonical department ──────────────────────────────
+// ── Subcategory prefix → canonical department (aligned with canonDept() in TM overview) ──
 const SUBCAT_TO_DEPT: Record<string, string> = {
   QAGE: "QA", ANNE: "QA",
   QCGE: "QC", QAIC: "QC", QAIO: "QC",
@@ -15,13 +16,13 @@ const SUBCAT_TO_DEPT: Record<string, string> = {
   PRMA: "Production", PRPA: "Production",
   BSGE: "Store", STCL: "Store", STGE: "Store",
   STOP: "Store", STPA: "Store", STRM: "Store",
-  MAGE: "Engineering and Maintenance", PREG: "Engineering and Maintenance",
+  MAGE: "Engineering", PREG: "Engineering",
   PEGE: "Personnel",
 };
 
 const DEPARTMENT_ORDER = [
   "QA", "QC", "Microbiology", "Production",
-  "Store", "Engineering and Maintenance", "Personnel",
+  "Store", "Engineering", "Personnel",
 ];
 
 function deptFromIdentifier(id?: string | null): string {
@@ -36,16 +37,17 @@ function deptFromIdentifier(id?: string | null): string {
   return "Other";
 }
 
+// Mirrors canonDept() from training-matrix/overview so dept names stay aligned
 function normalizeDeptName(raw?: string | null): string {
   if (!raw) return "Other";
   const lower = raw.toLowerCase().trim();
-  if (lower === "qa" || lower.includes("quality assurance")) return "QA";
-  if (lower === "qc" || lower.includes("quality control")) return "QC";
-  if (lower.includes("micro")) return "Microbiology";
-  if (lower.includes("engineer")) return "Engineering and Maintenance";
-  if (lower.includes("person") || lower.includes("hr")) return "Personnel";
-  if (lower.includes("store")) return "Store";
-  if (lower.includes("prod")) return "Production";
+  if (/\bqa\b|quality.?assur/.test(lower)) return "QA";
+  if (/\bqc\b|quality.?cont/.test(lower)) return "QC";
+  if (/micro/.test(lower)) return "Microbiology";
+  if (/engineer|maint/.test(lower)) return "Engineering";
+  if (/person|\bhr\b/.test(lower)) return "Personnel";
+  if (/store/.test(lower)) return "Store";
+  if (/prod/.test(lower)) return "Production";
   return "Other";
 }
 
@@ -71,15 +73,17 @@ export async function GET() {
       .select("identifier name department language processArea")
       .lean();
 
-    // Unique SOP identifiers per dept (family = identifier, ignoring language duplicates)
+    // Unique SOP families per dept — collapse version suffixes so "QAGE001-1"
+    // and "QAGE001-2" count as one family, matching Training Matrix's approach.
     const sopFamilyMap = new Map<string, { dept: string; languages: Set<string>; processAreas: Set<string>; name: string }>();
     for (const s of sops) {
-      const dept = resolveDept(s.identifier, s.department);
+      const baseId = baseIdentifierFromIdentifier(s.identifier); // collapse versions
+      const dept = resolveDept(baseId, s.department);
       if (dept === "Other") continue;
-      if (!sopFamilyMap.has(s.identifier)) {
-        sopFamilyMap.set(s.identifier, { dept, languages: new Set(), processAreas: new Set(), name: s.name });
+      if (!sopFamilyMap.has(baseId)) {
+        sopFamilyMap.set(baseId, { dept, languages: new Set(), processAreas: new Set(), name: s.name });
       }
-      const e = sopFamilyMap.get(s.identifier)!;
+      const e = sopFamilyMap.get(baseId)!;
       if (s.language) e.languages.add(s.language);
       if (s.processArea) e.processAreas.add(s.processArea);
     }
@@ -116,7 +120,9 @@ export async function GET() {
       totalQuestions: number; checkedCount: number; reviewedCount: number; similarCount: number; updatedAt?: Date;
     }[];
 
-    // Bank lookup: identifier → { dept, banks[] }
+    // Bank lookup: base identifier → aggregated stats
+    // Use baseIdentifierFromIdentifier() so "QAGE001-1" and "QAGE001-2" collapse
+    // to the same family "QAGE001", matching Training Matrix's counting method.
     const bankByIdentifier = new Map<string, {
       dept: string;
       totalQ: number; checkedQ: number; reviewedQ: number; similarQ: number;
@@ -124,7 +130,8 @@ export async function GET() {
     }>();
 
     for (const b of bankAgg) {
-      const id = (b.sopIdentifier ?? "").trim().toUpperCase();
+      const rawId = (b.sopIdentifier ?? "").trim().toUpperCase();
+      const id = baseIdentifierFromIdentifier(rawId); // collapse version suffix
       const dept = resolveDept(id, b.department);
       if (!bankByIdentifier.has(id)) {
         bankByIdentifier.set(id, { dept, totalQ: 0, checkedQ: 0, reviewedQ: 0, similarQ: 0, hasEn: false, hasGu: false });

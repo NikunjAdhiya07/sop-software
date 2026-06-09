@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { QuestionAnalyticsModal } from "./QuestionAnalyticsModal";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -67,9 +68,10 @@ interface QuestionCardProps {
   bankId: string;
   searchTerm: string;
   onUpdated: (idx: number, patch: Partial<MCQ>) => void;
+  onOpen: () => void;
 }
 
-function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated }: QuestionCardProps) {
+function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpen }: QuestionCardProps) {
   const [updating, setUpdating] = useState<string | null>(null);
 
   async function toggle(field: "isChecked" | "isReviewed" | "isSimilar") {
@@ -102,15 +104,18 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated }: Que
 
       <div className="relative flex flex-row items-stretch flex-1">
         {/* Left sidebar: index */}
-        <div className="flex w-14 shrink-0 flex-col items-center justify-start gap-2 border-r border-gray-100 bg-gray-50 p-3">
+        <div
+          className="flex w-14 shrink-0 flex-col items-center justify-start gap-2 border-r border-gray-100 bg-gray-50 p-3 cursor-pointer"
+          onClick={onOpen}
+        >
           <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 font-mono">#</span>
           <div className="flex h-9 w-9 items-center justify-center rounded-md border border-gray-200 bg-white text-sm font-mono font-bold text-purple-700 shadow-sm group-hover:border-purple-300">
             {originalIndex + 1}
           </div>
         </div>
 
-        {/* Main content */}
-        <div className="flex flex-1 flex-col px-4 pb-4 pt-3 min-w-0">
+        {/* Main content — click opens analytics modal */}
+        <div className="flex flex-1 flex-col px-4 pb-4 pt-3 min-w-0 cursor-pointer" onClick={onOpen}>
           {/* Top row: difficulty + status icons */}
           <div className="mb-1.5 flex items-center justify-between">
             <div className="flex flex-wrap items-center gap-2">
@@ -221,9 +226,10 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated }: Que
 interface MCQViewerModalProps {
   bankId: string;
   onClose: () => void;
+  onBack?: () => void;
 }
 
-export function MCQViewerModal({ bankId, onClose }: MCQViewerModalProps) {
+export function MCQViewerModal({ bankId, onClose, onBack }: MCQViewerModalProps) {
   const [bank, setBank] = useState<MCQBank | null>(null);
   const [mcqs, setMcqs] = useState<MCQ[]>([]);
   const [loading, setLoading] = useState(true);
@@ -236,6 +242,7 @@ export function MCQViewerModal({ bankId, onClose }: MCQViewerModalProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [searchVisible, setSearchVisible] = useState(false);
   const [isMaximized, setIsMaximized] = useState(true);
+  const [selectedQuestion, setSelectedQuestion] = useState<{ mcq: MCQ; index: number } | null>(null);
 
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -269,10 +276,10 @@ export function MCQViewerModal({ bankId, onClose }: MCQViewerModalProps) {
   }, [bankId]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") (onBack ?? onClose)(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onBack, onClose]);
 
   // Infinite scroll
   useEffect(() => {
@@ -335,8 +342,12 @@ export function MCQViewerModal({ bankId, onClose }: MCQViewerModalProps) {
           {/* Brand / nav row */}
           <div className="flex items-center justify-between px-6 py-4">
             <div className="flex min-w-0 items-center gap-4">
-              <button type="button" onClick={onClose}
-                className="rounded-xl border border-gray-200 bg-gray-100 p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-800 transition-all">
+              <button
+                type="button"
+                onClick={onBack ?? onClose}
+                title={onBack ? "Back to previous screen" : "Close"}
+                className="rounded-xl border border-gray-200 bg-gray-100 p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-800 transition-all"
+              >
                 <ArrowLeft className="h-5 w-5" />
               </button>
 
@@ -534,6 +545,7 @@ export function MCQViewerModal({ bankId, onClose }: MCQViewerModalProps) {
                     bankId={bankId}
                     searchTerm={searchTerm}
                     onUpdated={handleUpdated}
+                    onOpen={() => setSelectedQuestion({ mcq, index: originalIndex })}
                   />
                 );
               })}
@@ -541,6 +553,23 @@ export function MCQViewerModal({ bankId, onClose }: MCQViewerModalProps) {
           )}
         </div>
       </div>
+
+      {/* Question Analytics Modal */}
+      {selectedQuestion && (
+        <QuestionAnalyticsModal
+          mcq={selectedQuestion.mcq}
+          index={selectedQuestion.index}
+          bankId={bankId}
+          sopIdentifier={bank?.sopIdentifier ?? ""}
+          onClose={() => setSelectedQuestion(null)}
+          onUpdated={(idx, patch) => {
+            handleUpdated(idx, patch);
+            setSelectedQuestion((prev) =>
+              prev ? { ...prev, mcq: { ...prev.mcq, ...patch } } : null
+            );
+          }}
+        />
+      )}
     </div>
   );
 }

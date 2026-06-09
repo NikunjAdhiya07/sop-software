@@ -64,10 +64,10 @@ const DEPT_GRADIENT: Record<string, string> = {
 function fmt(n: number) { return n.toLocaleString(); }
 
 function StatusDot({ total, checked }: { total: number; checked: number }) {
-  if (total === 0) return <span className="inline-block h-2.5 w-2.5 rounded-full bg-white/10" />;
-  if (checked >= total) return <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]" />;
+  if (total === 0) return <span className="inline-block h-2.5 w-2.5 rounded-full bg-gray-200" />;
+  if (checked >= total) return <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_6px_#10b981]" />;
   if (checked > 0) return <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400" />;
-  return <span className="inline-block h-2.5 w-2.5 rounded-full bg-white/20" />;
+  return <span className="inline-block h-2.5 w-2.5 rounded-full bg-gray-300" />;
 }
 
 export function DeptDetailModal({ dept, deptColor, onClose, onViewMcqs }: DeptDetailModalProps) {
@@ -149,10 +149,10 @@ export function DeptDetailModal({ dept, deptColor, onClose, onViewMcqs }: DeptDe
     const active = sortKey === field;
     return (
       <button type="button" onClick={() => toggleSort(field)}
-        className="flex items-center gap-1 text-left text-[9px] font-black uppercase tracking-widest text-white/60 hover:text-white transition-colors">
+        className="flex items-center gap-1 text-left text-[9px] font-black uppercase tracking-widest text-gray-500 hover:text-gray-800 transition-colors">
         {label}
         {active
-          ? (sortDir === "asc" ? <ChevronUp className="h-3 w-3 text-white" /> : <ChevronDown className="h-3 w-3 text-white" />)
+          ? (sortDir === "asc" ? <ChevronUp className="h-3 w-3 text-gray-700" /> : <ChevronDown className="h-3 w-3 text-gray-700" />)
           : null}
       </button>
     );
@@ -164,7 +164,7 @@ export function DeptDetailModal({ dept, deptColor, onClose, onViewMcqs }: DeptDe
       <div className="absolute inset-0 cursor-pointer bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       <div
-        className={`relative flex flex-col overflow-hidden border border-white/10 bg-[#0D1117] shadow-2xl transition-all duration-500 ${
+        className={`relative flex flex-col overflow-hidden border border-gray-200 bg-white shadow-2xl transition-all duration-500 ${
           isCinema ? "h-full w-full rounded-none" : "h-[92vh] w-full max-w-[90rem] rounded-[32px]"
         }`}
         style={!isCinema ? { transform: `translate(${pos.x}px, ${pos.y}px)` } : undefined}
@@ -249,22 +249,22 @@ export function DeptDetailModal({ dept, deptColor, onClose, onViewMcqs }: DeptDe
               {/* Right: actions */}
               <div className="flex items-center gap-2">
                 <button type="button"
-                  className="flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-4 py-2 text-[9px] font-bold uppercase tracking-widest text-orange-300 backdrop-blur-xl shadow-lg transition-all hover:bg-orange-500/20">
+                  className="flex items-center gap-2 rounded-lg border border-white/30 bg-white/20 px-4 py-2 text-[9px] font-bold uppercase tracking-widest text-white backdrop-blur-xl shadow-lg transition-all hover:bg-white/30">
                   <Zap className="h-3 w-3" />
                   Bulk Smart Regen
                 </button>
                 <button type="button"
-                  className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/10 px-4 py-2 text-[9px] font-bold uppercase tracking-widest text-white backdrop-blur-xl shadow-lg transition-all hover:bg-white/20">
-                  <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+                  className="flex items-center gap-2 rounded-lg border border-white/30 bg-white/20 px-4 py-2 text-[9px] font-bold uppercase tracking-widest text-white backdrop-blur-xl shadow-lg transition-all hover:bg-white/30">
+                  <Star className="h-3 w-3 fill-amber-300 text-amber-300" />
                   Review
                 </button>
                 <button type="button" onClick={() => setIsCinema(true)}
-                  className="rounded-lg border border-white/10 bg-white/5 p-2.5 shadow-md transition-all hover:bg-white/10 group">
-                  <Maximize2 className="h-4 w-4 text-white/70 transition-all duration-300 group-hover:text-white" />
+                  className="rounded-lg border border-white/30 bg-white/20 p-2.5 shadow-md transition-all hover:bg-white/30 group">
+                  <Maximize2 className="h-4 w-4 text-white transition-all duration-300" />
                 </button>
                 <button type="button" onClick={onClose}
-                  className="rounded-lg border border-white/10 bg-white/5 p-2.5 shadow-md transition-all hover:border-rose-500/40 hover:bg-rose-500/20 group">
-                  <X className="h-4 w-4 text-white/70 transition-all duration-300 group-hover:rotate-90 group-hover:text-white" />
+                  className="rounded-lg border border-white/30 bg-white/20 p-2.5 shadow-md transition-all hover:bg-white/30 group">
+                  <X className="h-4 w-4 text-white transition-all duration-300 group-hover:rotate-90" />
                 </button>
               </div>
             </div>
@@ -272,28 +272,28 @@ export function DeptDetailModal({ dept, deptColor, onClose, onViewMcqs }: DeptDe
         )}
 
         {/* ── Search / toolbar ── */}
-        <div className="shrink-0 flex items-center justify-between border-b border-white/5 bg-[#0D1117] px-6 py-3 shadow-md">
+        <div className="shrink-0 flex items-center justify-between border-b border-gray-200 bg-gray-50 px-6 py-3 shadow-sm">
           {isCinema && (
             <div className="mr-4 flex items-center gap-3">
               <button type="button" onClick={() => setIsCinema(false)}
-                className="rounded-lg border border-indigo-500/20 bg-indigo-500/10 p-2 text-indigo-400 transition-all hover:bg-indigo-500/20">
+                className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 text-indigo-600 transition-all hover:bg-indigo-100">
                 <Minimize2 className="h-4 w-4" />
               </button>
               <div>
-                <p className="text-[9px] font-black uppercase tracking-widest text-indigo-400 leading-none mb-0.5">{dept}</p>
-                <p className="text-[7px] font-bold uppercase tracking-tighter text-gray-600">Expand View Active</p>
+                <p className="text-[9px] font-black uppercase tracking-widest text-indigo-600 leading-none mb-0.5">{dept}</p>
+                <p className="text-[7px] font-bold uppercase tracking-tighter text-gray-400">Expand View Active</p>
               </div>
             </div>
           )}
 
           <div className="relative max-w-md flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
               placeholder="Query SOPs, codes..."
-              className="w-full rounded-xl border border-white/10 bg-slate-800/40 py-2 pl-9 pr-8 text-xs text-white placeholder-gray-600 transition-all focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/30" />
+              className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-9 pr-8 text-xs text-gray-700 placeholder-gray-400 transition-all focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-200 shadow-sm" />
             {search && (
               <button type="button" onClick={() => setSearch("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors">
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 transition-colors">
                 <X className="h-3 w-3" />
               </button>
             )}
@@ -302,105 +302,117 @@ export function DeptDetailModal({ dept, deptColor, onClose, onViewMcqs }: DeptDe
           <div className="ml-4 flex items-center gap-2">
             {isCinema && (
               <button type="button" onClick={onClose}
-                className="rounded-lg border border-white/10 bg-white/5 p-2 transition-all hover:border-rose-500/40 hover:bg-rose-500/20 group">
-                <X className="h-4 w-4 text-white/70 group-hover:text-white" />
+                className="rounded-lg border border-gray-200 bg-white p-2 transition-all hover:border-rose-300 hover:bg-rose-50 group">
+                <X className="h-4 w-4 text-gray-500 group-hover:text-rose-600" />
               </button>
             )}
           </div>
         </div>
 
         {/* ── Table ── */}
-        <div className="flex-1 overflow-auto bg-[#0D1117] p-6">
+        <div className="flex-1 overflow-auto bg-gray-50 p-6">
           {loading ? (
             <div className="flex h-64 items-center justify-center">
               <div className="relative">
-                <div className="h-16 w-16 animate-spin rounded-full border-4 border-indigo-500/20 border-t-indigo-500" />
+                <div className="h-16 w-16 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-500" />
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <Loader2 className="h-6 w-6 animate-pulse text-indigo-400" />
+                  <Loader2 className="h-6 w-6 animate-pulse text-indigo-500" />
                 </div>
               </div>
             </div>
           ) : error ? (
-            <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div>
           ) : (
-            <div className="overflow-hidden rounded-2xl border border-white/5 bg-[#131722]">
+            <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
               <table className="w-full text-left">
                 <thead>
-                  <tr className="border-b border-white/5 bg-white/[0.02]">
+                  <tr className="border-b border-gray-200 bg-gray-100/70">
                     <th className="w-6 px-4 py-3" />
                     <th className="px-4 py-3"><SortTh label="Protocol ID" field="sopCode" /></th>
-                    <th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest text-white/60">SOP Name</th>
+                    <th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest text-gray-500">SOP Name</th>
                     <th className="px-4 py-3 text-center"><SortTh label="Units" field="totalQuestions" /></th>
                     <th className="px-4 py-3 text-center"><SortTh label="Approved" field="checkedCount" /></th>
                     <th className="px-4 py-3 text-center"><SortTh label="Reviewed" field="reviewedCount" /></th>
                     <th className="px-4 py-3 text-center"><SortTh label="Similar" field="similarCount" /></th>
-                    <th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest text-white/60">Lang</th>
+                    <th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest text-gray-500">Lang</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-white/[0.03]">
+                <tbody className="divide-y divide-gray-100">
                   {sorted.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-16 text-center text-sm text-gray-600">
+                      <td colSpan={8} className="py-16 text-center text-sm text-gray-400">
                         {search ? `No SOPs match "${search}"` : `No SOPs found for ${dept}`}
                       </td>
                     </tr>
                   ) : (
-                    sorted.map((entry, idx) => (
-                      <tr key={`${entry.sopCode}-${idx}`}
-                        className="transition-colors hover:bg-white/[0.02]">
-                        <td className="px-4 py-3">
-                          <StatusDot total={entry.totalQuestions} checked={entry.checkedCount} />
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3">
-                          <span className="font-mono text-xs font-bold text-indigo-400">{entry.sopCode}</span>
-                        </td>
-                        <td className="max-w-[260px] px-4 py-3">
-                          <p className="line-clamp-2 text-xs font-medium text-gray-300">{entry.sopName}</p>
-                          {entry.trainerName && (
-                            <p className="truncate text-[10px] text-gray-600">{entry.trainerName}</p>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-center">
-                          <span className={`text-xs font-bold ${entry.totalQuestions > 0 ? "text-white" : "text-white/20"}`}>
-                            {entry.totalQuestions > 0 ? fmt(entry.totalQuestions) : "—"}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-center">
-                          <span className={`text-xs font-semibold ${entry.checkedCount > 0 ? "text-emerald-400" : "text-white/20"}`}>
-                            {fmt(entry.checkedCount)}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-center">
-                          <span className={`text-xs font-semibold ${entry.reviewedCount > 0 ? "text-indigo-400" : "text-white/20"}`}>
-                            {fmt(entry.reviewedCount)}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-center">
-                          <span className={`text-xs font-semibold ${entry.similarCount > 0 ? "text-orange-400" : "text-white/20"}`}>
-                            {fmt(entry.similarCount)}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3">
-                          {entry.mcqBanks.length > 0 ? (
-                            <div className="flex items-center gap-1">
-                              {entry.mcqBanks.map((b) => (
-                                <button key={b.id} type="button"
-                                  onClick={() => onViewMcqs?.(b.id)}
-                                  className={`rounded-lg px-2.5 py-1 text-[9px] font-black uppercase tracking-widest transition-all border ${
-                                    b.language.toLowerCase() === "gujarati"
-                                      ? "border-orange-500/20 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20"
-                                      : "border-indigo-500/20 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20"
-                                  }`}>
-                                  {b.language.toLowerCase() === "gujarati" ? "GU" : "EN"}
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-[10px] text-white/20">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))
+                    sorted.map((entry, idx) => {
+                      const hasBanks = entry.mcqBanks.length > 0;
+                      const defaultBank = entry.mcqBanks.find(
+                        (b) => b.language.toLowerCase() !== "gujarati"
+                      ) ?? entry.mcqBanks[0];
+
+                      return (
+                        <tr
+                          key={`${entry.sopCode}-${idx}`}
+                          onClick={() => hasBanks && defaultBank && onViewMcqs?.(defaultBank.id)}
+                          className={`transition-colors hover:bg-indigo-50/50 ${hasBanks ? "cursor-pointer group/row" : ""}`}
+                        >
+                          <td className="px-4 py-3">
+                            <StatusDot total={entry.totalQuestions} checked={entry.checkedCount} />
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3">
+                            <span className={`font-mono text-xs font-bold transition-colors ${hasBanks ? "text-indigo-600 group-hover/row:text-indigo-700 group-hover/row:underline underline-offset-2" : "text-gray-400"}`}>
+                              {entry.sopCode}
+                            </span>
+                          </td>
+                          <td className="max-w-[260px] px-4 py-3">
+                            <p className="line-clamp-2 text-xs font-medium text-gray-700 group-hover/row:text-gray-900 transition-colors">{entry.sopName}</p>
+                            {entry.trainerName && (
+                              <p className="truncate text-[10px] text-gray-400">{entry.trainerName}</p>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-center">
+                            <span className={`text-xs font-bold ${entry.totalQuestions > 0 ? "text-gray-800" : "text-gray-300"}`}>
+                              {entry.totalQuestions > 0 ? fmt(entry.totalQuestions) : "—"}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-center">
+                            <span className={`text-xs font-semibold ${entry.checkedCount > 0 ? "text-emerald-600" : "text-gray-300"}`}>
+                              {fmt(entry.checkedCount)}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-center">
+                            <span className={`text-xs font-semibold ${entry.reviewedCount > 0 ? "text-indigo-600" : "text-gray-300"}`}>
+                              {fmt(entry.reviewedCount)}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-center">
+                            <span className={`text-xs font-semibold ${entry.similarCount > 0 ? "text-orange-500" : "text-gray-300"}`}>
+                              {fmt(entry.similarCount)}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                            {hasBanks ? (
+                              <div className="flex items-center gap-1">
+                                {entry.mcqBanks.map((b) => (
+                                  <button key={b.id} type="button"
+                                    onClick={() => onViewMcqs?.(b.id)}
+                                    className={`rounded-lg px-2.5 py-1 text-[9px] font-black uppercase tracking-widest transition-all border ${
+                                      b.language.toLowerCase() === "gujarati"
+                                        ? "border-orange-300 bg-orange-50 text-orange-600 hover:bg-orange-100"
+                                        : "border-indigo-300 bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
+                                    }`}>
+                                    {b.language.toLowerCase() === "gujarati" ? "GU" : "EN"}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-gray-300">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -409,7 +421,7 @@ export function DeptDetailModal({ dept, deptColor, onClose, onViewMcqs }: DeptDe
         </div>
 
         {/* Footer */}
-        <div className="shrink-0 border-t border-white/5 bg-[#0D1117] px-6 py-2 text-center text-[9px] font-bold uppercase tracking-widest text-gray-700">
+        <div className="shrink-0 border-t border-gray-200 bg-gray-50 px-6 py-2 text-center text-[9px] font-bold uppercase tracking-widest text-gray-400">
           {sorted.length} SOP{sorted.length !== 1 ? "s" : ""} · {dept} Department
         </div>
       </div>

@@ -14,7 +14,7 @@ const SUBCAT_TO_DEPT: Record<string, string> = {
   PRMA: "Production", PRPA: "Production",
   BSGE: "Store", STCL: "Store", STGE: "Store",
   STOP: "Store", STPA: "Store", STRM: "Store",
-  MAGE: "Engineering and Maintenance", PREG: "Engineering and Maintenance",
+  MAGE: "Engineering", PREG: "Engineering",
   PEGE: "Personnel",
 };
 
@@ -35,7 +35,7 @@ function normalizeDept(raw?: string | null): string {
   if (l === "qa" || l.includes("quality assurance")) return "QA";
   if (l === "qc" || l.includes("quality control")) return "QC";
   if (l.includes("micro")) return "Microbiology";
-  if (l.includes("engineer")) return "Engineering and Maintenance";
+  if (/engineer|maint/.test(l)) return "Engineering";
   if (l.includes("person") || l.includes("hr")) return "Personnel";
   if (l.includes("store")) return "Store";
   if (l.includes("prod")) return "Production";

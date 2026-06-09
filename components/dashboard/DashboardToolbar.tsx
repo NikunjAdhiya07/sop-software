@@ -14,6 +14,7 @@ import {
   Languages,
   MapPin,
   Plus,
+  Shield,
   Upload,
   Video,
   Wrench,
@@ -215,6 +216,15 @@ export function DashboardToolbar({
             </Btn>
           </>
         )}
+
+        {/* Compliance Engine – purple filled */}
+        <Btn
+          size="sm"
+          className="border-purple-600 bg-purple-600 text-white hover:bg-purple-700"
+          onClick={() => router.push("/compliance")}
+        >
+          <Shield className="h-3 w-3" /> Compliance Engine
+        </Btn>
 
         {/* MCQ Bank – dark navy filled */}
         <Btn

@@ -18,6 +18,8 @@ import {
   RefreshCw,
   Search,
   Upload,
+  UserCheck,
+  Users,
   X,
 } from "lucide-react";
 import { MCQViewerModal } from "./MCQViewerModal";
@@ -72,6 +74,19 @@ interface MCQBankGlobalStats {
   enRemaining: number;
   guRemaining: number;
   departments: DeptMCQStats[];
+}
+
+interface TrainingDeptData {
+  employeeCount: number;
+  fullyTrained: number;
+  incomplete: number;
+  trainersAssigned: number;
+  sopTrainersAssigned: number;
+  mcqCreatedCount: number;
+  mcqNotCreatedCount: number;
+  sopCount: number;
+  foundInDb: number;
+  dbSopCount: number;
 }
 
 interface RegistryEntry {
@@ -189,6 +204,7 @@ function StatusCard({
   totalSopEng, totalSopGuj, remainingEng, remainingGuj,
   mcqFound, mcqNotFound,
   genCompleted, genTarget, genRemaining,
+  trainingData,
   onOpen, onRowClick,
 }: {
   title: string; subtitle: string; isGrand?: boolean;
@@ -197,6 +213,7 @@ function StatusCard({
   totalSopEng: number; totalSopGuj: number; remainingEng: number; remainingGuj: number;
   mcqFound?: number; mcqNotFound?: number;
   genCompleted?: number; genTarget?: number; genRemaining?: number;
+  trainingData?: TrainingDeptData;
   onOpen?: () => void;
   onRowClick?: (f: "approved" | "partial" | "pending" | "similar") => void;
 }) {
@@ -280,6 +297,27 @@ function StatusCard({
           </div>
         </div>
       )}
+
+      {/* Training Matrix section */}
+      {trainingData && (
+        <div className={`mt-1.5 pt-1.5 border-t ${isGrand ? "border-purple-200" : "border-gray-100"}`}>
+          <div className="flex items-center gap-1.5 mb-1">
+            <Users className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+            <span className="min-w-0 flex-1 text-[11px] font-bold leading-tight text-gray-800">Training</span>
+          </div>
+          <div className="flex flex-col gap-0">
+            <CM label="Employees" value={trainingData.employeeCount} />
+            <TripleRow items={[
+              { label: "Trained",    value: trainingData.fullyTrained,  vc: "text-emerald-600" },
+              { label: "Incomplete", value: trainingData.incomplete,    vc: trainingData.incomplete > 0 ? "text-amber-500" : "text-gray-900" },
+            ]} />
+            <CM label="SOPs w/ Trainer" value={trainingData.sopTrainersAssigned} vc="text-indigo-600" />
+            {trainingData.dbSopCount > 0 && (
+              <CM label="SOPs (DB)" value={trainingData.dbSopCount} vc="text-blue-600" />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -288,9 +326,10 @@ function StatusCard({
 // Colorful dept card (By Department section)
 // ─────────────────────────────────────────────────────────────
 function DeptColorCard({
-  dept, onClick,
+  dept, trainingData, onClick,
 }: {
   dept: DeptMCQStats;
+  trainingData?: TrainingDeptData;
   onClick?: () => void;
 }) {
   const theme = getDeptTheme(dept.department);
@@ -344,7 +383,7 @@ function DeptColorCard({
         </div>
 
         {/* Top stats */}
-        <div className="grid grid-cols-2 gap-1.5 w-full mb-3">
+        <div className={`grid gap-1.5 w-full mb-3 ${trainingData ? "grid-cols-4" : "grid-cols-2"}`}>
           <div className={`${theme.statBg} rounded-lg p-2 text-left border border-gray-100`}>
             <p className="text-gray-400 text-[8px] uppercase tracking-wider font-bold mb-0.5">SOP</p>
             <span className={`text-base font-black leading-none ${theme.accent}`}>{dept.sopWithMcqs}</span>
@@ -353,6 +392,18 @@ function DeptColorCard({
             <p className="text-gray-400 text-[8px] uppercase tracking-wider font-bold mb-0.5">Questions</p>
             <span className="text-base font-black leading-none text-gray-800">{fmt(dept.totalQuestions)}</span>
           </div>
+          {trainingData && (
+            <>
+              <div className="bg-indigo-50 rounded-lg p-2 text-left border border-indigo-100">
+                <p className="text-indigo-300 text-[8px] uppercase tracking-wider font-bold mb-0.5">Employees</p>
+                <span className="text-base font-black leading-none text-indigo-700">{trainingData.employeeCount}</span>
+              </div>
+              <div className={`rounded-lg p-2 text-left border ${trainingData.fullyTrained === trainingData.employeeCount && trainingData.employeeCount > 0 ? "bg-emerald-50 border-emerald-100" : "bg-amber-50 border-amber-100"}`}>
+                <p className="text-[8px] uppercase tracking-wider font-bold mb-0.5 text-gray-400">Trained</p>
+                <span className={`text-base font-black leading-none ${trainingData.fullyTrained === trainingData.employeeCount && trainingData.employeeCount > 0 ? "text-emerald-600" : "text-amber-600"}`}>{trainingData.fullyTrained}</span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Coverage bar */}
@@ -431,9 +482,48 @@ function DeptColorCard({
         )}
       </div>
 
-      {/* Inline placeholder dropdown */}
+      {/* Expanded training details */}
       {expanded && (
-        <div className={`border-t ${theme.border} ${theme.statBg} px-3 py-2 flex flex-col gap-1`}>
+        <div className={`border-t ${theme.border} ${theme.statBg} px-3 py-2 flex flex-col gap-1.5`}>
+          {trainingData && trainingData.employeeCount > 0 && (
+            <>
+              {/* Training completion bar */}
+              <div className="bg-white border border-gray-100 rounded-lg px-2.5 py-2">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-1.5">
+                    <UserCheck className={`h-3 w-3 ${theme.iconText}`} />
+                    <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider">Training Completion</span>
+                  </div>
+                  <span className={`text-[9px] font-black ${trainingData.employeeCount > 0 ? theme.accent : "text-gray-400"}`}>
+                    {trainingData.employeeCount > 0 ? Math.round((trainingData.fullyTrained / trainingData.employeeCount) * 100) : 0}%
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-indigo-500 transition-all duration-700"
+                    style={{ width: `${trainingData.employeeCount > 0 ? Math.round((trainingData.fullyTrained / trainingData.employeeCount) * 100) : 0}%` }}
+                  />
+                </div>
+                <div className="flex items-center gap-3 mt-1.5">
+                  <span className="text-[8px] text-emerald-600 font-bold">{trainingData.fullyTrained} Trained</span>
+                  <span className="text-[8px] text-amber-500 font-bold">{trainingData.incomplete} Incomplete</span>
+                  {trainingData.sopTrainersAssigned > 0 && (
+                    <span className="text-[8px] text-indigo-500 font-bold ml-auto">{trainingData.sopTrainersAssigned} SOPs w/ Trainer</span>
+                  )}
+                </div>
+              </div>
+              {/* DB SOP count */}
+              {trainingData.dbSopCount > 0 && (
+                <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white border border-gray-100">
+                  <FileText className={`h-3 w-3 ${theme.iconText} shrink-0`} />
+                  <span className="text-[9px] text-gray-500">
+                    <span className={`font-bold ${theme.accent}`}>{trainingData.dbSopCount}</span> SOPs in DB ·
+                    <span className="font-bold text-indigo-600 ml-1">{trainingData.foundInDb}</span> in Training Matrix
+                  </span>
+                </div>
+              )}
+            </>
+          )}
           <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white border border-gray-200">
             <FolderOpen className={`h-3 w-3 ${theme.iconText} shrink-0`} />
             <span className="text-[9px] text-gray-500">{dept.subcategories} subcategor{dept.subcategories !== 1 ? "ies" : "y"} — click department header to view</span>
@@ -536,12 +626,16 @@ export function MCQBankClient() {
 
   // Modal state
   const [viewerBankId, setViewerBankId] = useState<string | null>(null);
+  const [viewerSourceDept, setViewerSourceDept] = useState<string | null>(null);
   const [deptModal, setDeptModal] = useState<string | null>(null);
 
   // Data state
   const [stats, setStats] = useState<MCQBankGlobalStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState<string | null>(null);
+
+  const [tmPerDept, setTmPerDept] = useState<Record<string, TrainingDeptData> | null>(null);
+  const [tmTotalCard, setTmTotalCard] = useState<TrainingDeptData | null>(null);
 
   const [entries, setEntries] = useState<RegistryEntry[]>([]);
   const [total, setTotal] = useState(0);
@@ -572,9 +666,53 @@ export function MCQBankClient() {
     setStatsLoading(true);
     setStatsError(null);
     try {
-      const res = await fetch("/api/mcq-bank/stats");
-      if (!res.ok) throw new Error((await res.json()).error ?? "Failed");
-      setStats(await res.json());
+      const [statsRes, tmRes] = await Promise.all([
+        fetch("/api/mcq-bank/stats"),
+        fetch("/api/training-matrix/overview"),
+      ]);
+      if (!statsRes.ok) throw new Error((await statsRes.json()).error ?? "Failed to load MCQ stats");
+      setStats(await statsRes.json());
+
+      if (tmRes.ok) {
+        const tmData = await tmRes.json();
+        if (tmData.success && tmData.perDept) {
+          // dbSopCountsByDept lives in totalCard (per-dept DB SOP counts)
+          const dbCounts: Record<string, number> = tmData.totalCard?.dbSopCountsByDept ?? {};
+
+          // Per-dept slim records
+          const slim: Record<string, TrainingDeptData> = {};
+          for (const [dept, d] of Object.entries(tmData.perDept as Record<string, Record<string, number>>)) {
+            slim[dept] = {
+              employeeCount: d.employeeCount ?? 0,
+              fullyTrained: d.fullyTrained ?? 0,
+              incomplete: d.incomplete ?? 0,
+              trainersAssigned: d.trainersAssigned ?? 0,
+              sopTrainersAssigned: d.sopTrainersAssigned ?? 0,
+              mcqCreatedCount: d.mcqCreatedCount ?? 0,
+              mcqNotCreatedCount: d.mcqNotCreatedCount ?? 0,
+              sopCount: d.sopCount ?? 0,
+              foundInDb: d.foundInDb ?? 0,
+              dbSopCount: (dbCounts[dept] as number) ?? 0,
+            };
+          }
+          setTmPerDept(slim);
+
+          // totalCard has correct aggregated values (avoids double-counting when summing per-dept)
+          const tc = tmData.totalCard ?? {};
+          setTmTotalCard({
+            employeeCount: tc.employeeCount ?? 0,
+            fullyTrained: tc.fullyTrained ?? 0,
+            incomplete: tc.incomplete ?? 0,
+            trainersAssigned: tc.trainersAssigned ?? 0,
+            sopTrainersAssigned: tc.sopTrainersAssigned ?? 0,
+            mcqCreatedCount: tc.mcqCreatedCount ?? 0,
+            mcqNotCreatedCount: tc.mcqNotCreatedCount ?? 0,
+            sopCount: tc.excelSopCount ?? tc.sopCount ?? 0,
+            foundInDb: tc.foundInDb ?? 0,
+            dbSopCount: tc.dbSopCount ?? 0, // = dbBaseSet.size, matches TM "SOPs (DB)"
+          });
+        }
+      }
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : "Failed to load stats");
     } finally {
@@ -652,7 +790,24 @@ export function MCQBankClient() {
     remainingGuj: stats.guRemaining,
   } : null;
 
-  const DEPT_ORDER = ["QA", "QC", "Microbiology", "Production", "Store", "Engineering and Maintenance", "Personnel"];
+  // Resolve TM data for an MCQ-bank dept name (handles "Engineering and Maintenance" → "Engineering")
+  const getTmData = useCallback((deptName: string): TrainingDeptData | undefined => {
+    if (!tmPerDept) return undefined;
+    if (tmPerDept[deptName]) return tmPerDept[deptName];
+    // Strip "and <word>" suffix (e.g. "Engineering and Maintenance" → "Engineering")
+    const stripped = deptName.replace(/\s+and\s+\w+/gi, "").trim();
+    if (tmPerDept[stripped]) return tmPerDept[stripped];
+    // Case-insensitive prefix match
+    const lower = deptName.toLowerCase();
+    for (const key of Object.keys(tmPerDept)) {
+      if (lower.startsWith(key.toLowerCase()) || key.toLowerCase().startsWith(lower)) return tmPerDept[key];
+    }
+    return undefined;
+  }, [tmPerDept]);
+
+  // tmTotalCard is used directly for the grand Total card (avoids summing per-dept which double-counts)
+
+  const DEPT_ORDER = ["QA", "QC", "Microbiology", "Production", "Store", "Engineering", "Personnel"];
   const orderedDepts = stats ? [
     ...DEPT_ORDER.map((n) => stats.departments.find((d) => d.department === n)).filter(Boolean) as DeptMCQStats[],
     ...stats.departments.filter((d) => !DEPT_ORDER.includes(d.department)),
@@ -664,7 +819,17 @@ export function MCQBankClient() {
     <>
       {/* MCQ Viewer Modal */}
       {viewerBankId && (
-        <MCQViewerModal bankId={viewerBankId} onClose={() => setViewerBankId(null)} />
+        <MCQViewerModal
+          bankId={viewerBankId}
+          onClose={() => { setViewerBankId(null); setViewerSourceDept(null); }}
+          onBack={() => {
+            setViewerBankId(null);
+            if (viewerSourceDept) {
+              setDeptModal(viewerSourceDept);
+              setViewerSourceDept(null);
+            }
+          }}
+        />
       )}
 
       {/* Dept Detail Modal */}
@@ -673,7 +838,11 @@ export function MCQBankClient() {
           dept={deptModal}
           deptColor={getDeptColor(deptModal)}
           onClose={() => setDeptModal(null)}
-          onViewMcqs={(id) => { setDeptModal(null); setViewerBankId(id); }}
+          onViewMcqs={(id) => {
+            setViewerSourceDept(deptModal);
+            setDeptModal(null);
+            setViewerBankId(id);
+          }}
         />
       )}
 
@@ -774,6 +943,7 @@ export function MCQBankClient() {
                     remainingGuj={globalCard.remainingGuj}
                     mcqFound={stats.mcqFound}
                     mcqNotFound={stats.notFound}
+                    trainingData={tmTotalCard ?? undefined}
                   />
                   {/* Per-dept cards */}
                   {orderedDepts.map((dept) => (
@@ -792,6 +962,7 @@ export function MCQBankClient() {
                       totalSopGuj={dept.totalSopGuj}
                       remainingEng={dept.enRemaining}
                       remainingGuj={dept.guRemaining}
+                      trainingData={getTmData(dept.department)}
                       onOpen={() => setDeptModal(dept.department)}
                       onRowClick={(f) => setDeptModal(dept.department)}
                     />
@@ -833,6 +1004,7 @@ export function MCQBankClient() {
                   <DeptColorCard
                     key={dept.department}
                     dept={dept}
+                    trainingData={getTmData(dept.department)}
                     onClick={() => setDeptModal(dept.department)}
                   />
                 ))}

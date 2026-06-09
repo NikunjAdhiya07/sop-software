@@ -3,6 +3,7 @@ import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
 import Guideline from "@/models/Guideline";
 import ComplianceAnalysis from "@/models/ComplianceAnalysis";
+import ComplianceReport from "@/models/ComplianceReport";
 import { streamComplianceAnalysis } from "@/lib/gemini";
 import {
   complianceStatusFromScore,
@@ -11,6 +12,56 @@ import {
 import { invalidateDashboardSopsCache } from "@/lib/cache";
 import { requireAuth } from "@/lib/withAuth";
 import type { IComplianceFinding } from "@/models/ComplianceAnalysis";
+import mongoose from "mongoose";
+
+export async function GET(request: NextRequest) {
+  const auth = await requireAuth(["admin", "trainer", "viewer"]);
+  if (auth.error) return auth.error;
+
+  try {
+    await connectDB();
+    const reportId = request.nextUrl.searchParams.get("reportId");
+
+    if (reportId) {
+      const report = await ComplianceReport.findById(reportId).lean();
+      if (!report) return NextResponse.json({ success: false, error: "Report not found" }, { status: 404 });
+      return NextResponse.json({ success: true, report });
+    }
+
+    const reports = await ComplianceReport.find({})
+      .sort({ analyzedAt: -1 })
+      .limit(200)
+      .select("-findings")
+      .lean();
+
+    return NextResponse.json({ success: true, reports });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: error instanceof Error ? error.message : "Failed to fetch reports" },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const auth = await requireAuth(["admin", "trainer"]);
+  if (auth.error) return auth.error;
+
+  try {
+    await connectDB();
+    const reportId = request.nextUrl.searchParams.get("reportId");
+    if (!reportId || !mongoose.Types.ObjectId.isValid(reportId)) {
+      return NextResponse.json({ success: false, error: "Valid reportId required" }, { status: 400 });
+    }
+    await ComplianceReport.findByIdAndDelete(reportId);
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: error instanceof Error ? error.message : "Failed to delete report" },
+      { status: 500 },
+    );
+  }
+}
 
 function emitLine(controller: ReadableStreamDefaultController, data: Record<string, unknown>) {
   controller.enqueue(new TextEncoder().encode(`${JSON.stringify(data)}\n`));

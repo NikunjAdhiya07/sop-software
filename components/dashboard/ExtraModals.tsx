@@ -398,7 +398,7 @@ export function GuidelinesPanel() {
 
   useEffect(() => {
     if (!showGuidelines) return;
-    fetch("/api/compliance/guideline-stats")
+    fetch("/api/guidelines")
       .then((r) => r.json())
       .then((d) => setGuidelines(d.guidelines ?? []));
   }, [showGuidelines]);
