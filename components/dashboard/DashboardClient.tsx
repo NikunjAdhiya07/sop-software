@@ -180,7 +180,7 @@ export function DashboardClient() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen overflow-x-hidden bg-gray-50">
       <DashboardHeader
         stats={stats}
         onExpiryFilter={(tier) => setFilter({ expiry: tier })}
@@ -270,6 +270,7 @@ export function DashboardClient() {
       <AdminToolsModal
         open={adminOpen}
         onClose={() => setAdminOpen(false)}
+        onSuccess={refresh}
         isAdmin={userIsAdmin}
       />
       <PipelineDock onComplete={refresh} />

@@ -15,6 +15,28 @@ export function hasGujaratiScript(s: string): boolean {
   return /[઀-૿]/.test(s);
 }
 
+/**
+ * Decide a document's language from the actual script of its extracted text.
+ *
+ * Filename/path hints are unreliable — a Gujarati SOP is often uploaded with an
+ * English-looking code as its filename, which would otherwise tag it "English"
+ * and leave its title unresolved. When the body is predominantly Gujarati
+ * script, trust the content over the filename guess.
+ */
+export function languageFromContentScript(
+  content: string | undefined | null,
+  fallback: "English" | "Gujarati",
+): "English" | "Gujarati" {
+  if (!content || content.startsWith("[")) return fallback;
+  const sample = content.slice(0, 2000);
+  const gujarati = (sample.match(/[઀-૿]/g) ?? []).length;
+  const latin = (sample.match(/[A-Za-z]/g) ?? []).length;
+  // Require a clear Gujarati majority so an English doc with a stray
+  // transliterated word isn't misclassified.
+  if (gujarati > 20 && gujarati > latin) return "Gujarati";
+  return fallback;
+}
+
 /** Strip folder paths and leading SOP-code prefixes from a stored name. */
 export function cleanSopDisplayName(raw: string | undefined | null): string {
   if (!raw) return "";
@@ -34,11 +56,16 @@ export function cleanSopDisplayName(raw: string | undefined | null): string {
 /** True when the stored name is just the SOP code (not a real title). */
 export function nameIsJustCode(name: string, identifier: string): boolean {
   if (!name) return true;
+  const trimmed = name.trim();
   const base = baseIdentifierFromIdentifier(identifier).toUpperCase();
-  const n = name.trim().toUpperCase().replace(/[-_\s]/g, "");
+  const n = trimmed.toUpperCase().replace(/[-_\s]/g, "");
   const b = base.replace(/[-_\s]/g, "");
   const id = identifier.trim().toUpperCase().replace(/[-_\s]/g, "");
-  return n === id || n === b || /^[A-Z]{2,}\d+[A-Z0-9]*$/.test(n);
+  if (n === id || n === b) return true;
+  // The code-shaped pattern (LETTERS+DIGITS) must only flag single tokens —
+  // a real multi-word title like "Wadhwan-2 Facility" collapses to
+  // "WADHWAN2FACILITY" and would otherwise be mistaken for a code.
+  return !/\s/.test(trimmed) && /^[A-Z]{2,}\d+[A-Z0-9]*$/.test(n);
 }
 
 /** Reject boilerplate / junk names that sometimes land in the DB from bad DOCX parsing. */
@@ -100,6 +127,31 @@ export function pickBestSopName(
   return best && best.score > 0 ? best.name : undefined;
 }
 
+/** True when a stored name matches the expected script for its language. */
+export function nameMatchesLanguage(
+  name: string,
+  language: "English" | "Gujarati" | undefined,
+): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  const isGuj = hasGujaratiScript(trimmed);
+  if (language === "Gujarati") return isGuj;
+  return !isGuj && /[a-zA-Z]{3}/.test(trimmed);
+}
+
+/** True when a per-language SOP record should be re-derived from file/content sources. */
+export function sopRecordNameNeedsFix(
+  name: string,
+  identifier: string,
+  language: "English" | "Gujarati" | undefined,
+): boolean {
+  const trimmed = name?.trim() ?? "";
+  if (!trimmed || nameIsJustCode(trimmed, identifier)) return true;
+  if (isPlaceholderSopName(trimmed, identifier)) return true;
+  if (!nameMatchesLanguage(trimmed, language)) return true;
+  return false;
+}
+
 export type ResolvedSopNames = {
   englishName: string;
   gujaratiName?: string;
@@ -112,14 +164,19 @@ export function resolveSopFamilyNames(
   identifier: string,
   fallbackEnglish?: string,
 ): ResolvedSopNames {
+  const gujaratiCandidate = pickBestSopName(records, identifier, true);
+
+  // Primary display name: a real English title wins, then a provided fallback,
+  // then the Gujarati title (so Gujarati-only SOPs show their actual title
+  // instead of the bare SOP code), and finally the code itself.
   const englishName =
     pickBestSopName(records, identifier, false) ||
     (fallbackEnglish && !isPlaceholderSopName(fallbackEnglish, identifier)
       ? cleanSopDisplayName(fallbackEnglish)
       : "") ||
+    gujaratiCandidate ||
     baseIdentifierFromIdentifier(identifier);
 
-  const gujaratiCandidate = pickBestSopName(records, identifier, true);
   const gujaratiName =
     gujaratiCandidate && gujaratiCandidate !== englishName ? gujaratiCandidate : undefined;
 

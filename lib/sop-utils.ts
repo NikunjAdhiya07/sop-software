@@ -17,10 +17,13 @@ import type {
   SOPFilters,
 } from "@/lib/types";
 import {
+  cleanSopDisplayName,
   hasGujaratiScript,
   isPlaceholderSopName,
+  nameMatchesLanguage,
   resolveSopFamilyNames,
 } from "@/lib/sop-name-resolution";
+import { nameFromFilename } from "@/lib/sop-filename";
 
 const NEAR_EXPIRY_DAYS = 90;
 const MEDIUM_EXPIRY_DAYS = 180;
@@ -99,6 +102,23 @@ function recordVersionNum(record: ISOP): number {
   // takes effect. The stored versionNum DB field may have been saved with an old default
   // (e.g. 1 for records that had version="1.0") and would yield a wrong comparison.
   return versionNumber(recordVersion(record));
+}
+
+function pickFamilyDate(
+  records: ISOP[],
+  field: "expiryDate" | "effectiveDate" | "reviewDate",
+): Date | undefined {
+  const ranked = [...records].sort((a, b) => {
+    const score = (r: ISOP) => {
+      let s = 0;
+      if (r.language !== "Gujarati") s += 10;
+      if (r.fileType === "docx") s += 5;
+      if (r[field]) s += 1;
+      return s;
+    };
+    return score(b) - score(a);
+  });
+  return ranked.find((r) => r[field])?.[field];
 }
 
 function recordVersion(record: ISOP): string {
@@ -426,7 +446,8 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
     const primary = sorted[0] ?? group[0];
     const files = collectVersionFiles(currentRecords);
     const language = resolveLanguage(group);
-    const expiryDate = primary.expiryDate ?? group.find((r) => r.expiryDate)?.expiryDate;
+    const expiryDate = pickFamilyDate(currentRecords.length ? currentRecords : group, "expiryDate");
+    const effectiveDate = pickFamilyDate(currentRecords.length ? currentRecords : group, "effectiveDate");
     const uploadedAt = currentRecords.reduce(
       (latest, r) =>
         new Date(r.uploadedAt) > new Date(latest) ? r.uploadedAt.toISOString() : latest,
@@ -458,7 +479,7 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
       language,
       guidelineReference: primary.guidelineReference,
       expiryDate: expiryDate?.toISOString(),
-      effectiveDate: primary.effectiveDate?.toISOString(),
+      effectiveDate: effectiveDate?.toISOString(),
       uploadedAt,
       complianceStatus: primary.complianceStatus ?? "pending",
       complianceScore: complianceScoreFromStatus(primary.complianceStatus),
@@ -943,7 +964,34 @@ const FOLDER_DEPARTMENT_ALIASES: Record<string, string> = {
   "e&m": "Engineering and Maintenance",
   personnel: "Personnel",
   hr: "Personnel",
-  general: "General",
+};
+
+/** SOP subcategory prefix → department (e.g. MAGE01-05, MAGE - General). */
+const SUBCAT_TO_DEPT: Record<string, string> = {
+  QAGE: "QA",
+  ANNE: "QA",
+  QCGE: "QC",
+  QAIC: "QC",
+  QAIO: "QC",
+  QAMI: "Microbiology",
+  QCMI: "Microbiology",
+  PRAA: "Production",
+  PRCL: "Production",
+  PRED: "Production",
+  PREO: "Production",
+  PREP: "Production",
+  PRGE: "Production",
+  PRMA: "Production",
+  PRPA: "Production",
+  BSGE: "Store",
+  STCL: "Store",
+  STGE: "Store",
+  STOP: "Store",
+  STPA: "Store",
+  STRM: "Store",
+  MAGE: "Engineering and Maintenance",
+  PREG: "Engineering and Maintenance",
+  PEGE: "Personnel",
 };
 
 const IDENTIFIER_DEPARTMENT_RULES: { pattern: RegExp; department: string }[] = [
@@ -953,7 +1001,7 @@ const IDENTIFIER_DEPARTMENT_RULES: { pattern: RegExp; department: string }[] = [
   { pattern: /^MI[A-Z0-9]/i, department: "Microbiology" },
   { pattern: /^(PROD|PRD|PD)[A-Z0-9]/i, department: "Production" },
   { pattern: /^(STR|STOR|BS)[A-Z0-9]/i, department: "Store" },
-  { pattern: /^(ENG|EM)[A-Z0-9]/i, department: "Engineering and Maintenance" },
+  { pattern: /^(ENG|EM|MAGE|PREG)[A-Z0-9]/i, department: "Engineering and Maintenance" },
   { pattern: /^(PER|PE)[A-Z0-9]/i, department: "Personnel" },
 ];
 
@@ -974,6 +1022,15 @@ function normalizeFolderDepartment(segment: string): string | null {
 export function departmentFromIdentifier(identifier: string): string | null {
   const code = identifier.trim().toUpperCase().replace(/_/g, "-");
   if (!code) return null;
+
+  const subcatMatch = code.match(/^([A-Z]{2,6})\d/);
+  if (subcatMatch && SUBCAT_TO_DEPT[subcatMatch[1]]) {
+    return SUBCAT_TO_DEPT[subcatMatch[1]];
+  }
+  for (let len = 6; len >= 2; len--) {
+    const prefix = code.slice(0, len);
+    if (SUBCAT_TO_DEPT[prefix]) return SUBCAT_TO_DEPT[prefix];
+  }
 
   for (const rule of IDENTIFIER_DEPARTMENT_RULES) {
     if (rule.pattern.test(code)) return rule.department;
@@ -1152,39 +1209,119 @@ export function sopVersionFields(identifier: string, storedVersion?: string | nu
 // Lines that are never the SOP title — skip them when scanning document text.
 const TITLE_SKIP = /^(standard\s+operating\s+procedure|document\s+(no|number|title)|sop\s+(no|number|title)|revision|version\s+no|date\s+of|effective\s+date|approved\s+by|prepared\s+by|reviewed\s+by|page\s+\d|confidential|internal\s+use|copy\s+no|objective\s*:?\s*)$/i;
 
+function stripLeadingSopCodeFromLine(line: string, identifier: string): string {
+  let s = line.trim();
+  const sopBase = baseIdentifierFromIdentifier(identifier);
+  const escapedBase = sopBase.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  s = s.replace(new RegExp(`^[A-Z]{2,}[A-Z0-9]*-\\d+[\\s_:\\-–]*`, "i"), "").trim();
+  s = s.replace(new RegExp(`^${escapedBase}[\\s_:\\-–]*`, "i"), "").trim();
+  return s;
+}
+
+function normalizeTitleLine(line: string): string {
+  if (line === line.toUpperCase() && /[A-Z]{2}/.test(line)) {
+    return line
+      .toLowerCase()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return line;
+}
+
+function lineLooksLikeTitle(
+  line: string,
+  language: "English" | "Gujarati",
+): boolean {
+  if (line.length < 4 || line.length > 160) return false;
+  if (TITLE_SKIP.test(line)) return false;
+  if (/^\d+[\s.]/.test(line)) return false;
+  if (language === "Gujarati") return hasGujaratiScript(line);
+  return !hasGujaratiScript(line) && /[a-zA-Z]{3}/.test(line);
+}
+
+/**
+ * Pull the title from the header "SUBJECT :" field — the document's own,
+ * authoritative title. Stops at the next header cell label so trailing
+ * EFF. DATE / SUPERSEDES / page-number text isn't captured.
+ */
+function extractSubjectTitle(content: string): string | null {
+  // English "SUBJECT" and Gujarati "વિષય"; stop at the next header cell label
+  // (English EFF. DATE / SUPERSEDES … or Gujarati લાગુ પડેલ / ફેર ચકાસણી / રદ કરેલ).
+  const match = content.match(
+    /(?:SUBJECT|વિષય)\s*:?\s*(.+?)\s*(?:EFF\.?\s*DATE|REVIEW\s*DT\.?|SUPERSEDES|PAGE\s*NO\.?|PREPARED\s*BY|SOP\s*NO\.?|લાગુ\s*પડેલ|ફેર\s*ચકાસણી|રદ\s*કરેલ|બનાવનાર|$)/i,
+  );
+  const title = match?.[1]?.replace(/\s+/g, " ").trim();
+  return title && title.length >= 3 ? title : null;
+}
+
 /**
  * Extract the SOP title from the first meaningful lines of extracted document text.
  * Returns null when no reliable title is found.
  */
-export function extractTitleFromContent(content: string, identifier: string): string | null {
+export function extractTitleFromContent(
+  content: string,
+  identifier: string,
+  language: "English" | "Gujarati" = "English",
+): string | null {
   if (!content || content.startsWith("[")) return null;
 
+  // The header SUBJECT field is the authoritative title; prefer it over the
+  // body heuristic (which otherwise grabs the OBJECTIVE sentence).
+  const subject = extractSubjectTitle(content);
+  if (subject && lineLooksLikeTitle(subject, language)) {
+    return normalizeTitleLine(subject);
+  }
+
   const sopBase = baseIdentifierFromIdentifier(identifier).toUpperCase();
-  // Regex to detect lines that are just the SOP code or version reference
-  const codeLineRe = new RegExp(`^[A-Z]{2,}[A-Z0-9]*[-]\\d+`, "i");
 
   const lines = content
     .split(/[\n\r]+/)
     .map((l) => l.trim())
     .filter(Boolean);
 
-  for (const line of lines.slice(0, 30)) {
-    if (line.length < 4 || line.length > 160) continue;
-    if (codeLineRe.test(line)) continue;           // skip lines starting with SOP code
-    if (line.toUpperCase().includes(sopBase)) continue; // skip lines containing base code
-    if (TITLE_SKIP.test(line)) continue;           // skip boilerplate headers
-    if (/^\d+[\s.]/.test(line)) continue;          // skip numbered section headings
-    if (!/[a-zA-Z]{3}/.test(line)) continue;       // must contain at least 3 letters
-
-    // Normalize ALL_CAPS to Title Case
-    if (line === line.toUpperCase() && /[A-Z]{2}/.test(line)) {
-      return line
-        .toLowerCase()
-        .replace(/\b\w/g, (c) => c.toUpperCase());
-    }
-    return line;
+  for (const rawLine of lines.slice(0, 30)) {
+    let line = stripLeadingSopCodeFromLine(rawLine, identifier);
+    if (!line) continue;
+    if (line.toUpperCase() === sopBase) continue;
+    if (!lineLooksLikeTitle(line, language)) continue;
+    return normalizeTitleLine(line);
   }
 
   return null;
+}
+
+/** Derive the display name for a single language-specific SOP record. */
+export function deriveSopRecordName(opts: {
+  identifier: string;
+  language: "English" | "Gujarati";
+  fileType: "pdf" | "docx";
+  content?: string;
+  originalFileName?: string;
+  titleFromPath?: string | null;
+  explicitName?: string | null;
+}): string {
+  const { identifier, language, fileType } = opts;
+  const candidates: Array<string | null | undefined> = [
+    opts.explicitName?.trim(),
+    opts.titleFromPath?.trim(),
+    fileType === "docx" && opts.content
+      ? extractTitleFromContent(opts.content, identifier, language)
+      : null,
+    opts.originalFileName ? nameFromFilename(opts.originalFileName) : "",
+  ];
+
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const cleaned = cleanSopDisplayName(raw);
+    if (
+      !cleaned ||
+      isPlaceholderSopName(cleaned, identifier) ||
+      !nameMatchesLanguage(cleaned, language)
+    ) {
+      continue;
+    }
+    return cleaned;
+  }
+
+  return identifier;
 }
 

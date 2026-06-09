@@ -2,17 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
 import {
+  resolveSopDatesFromContent,
+  sopDatesToDbFields,
+} from "@/lib/sop-dates";
+import {
   defaultExpiryDate,
+  deriveSopRecordName,
   extractIdentifierFromFilename,
-  extractTitleFromContent,
   parseUploadPathMetadata,
   resolveDepartmentFromUpload,
   sopVersionFields,
   versionFromIdentifier,
 } from "@/lib/sop-utils";
+import { resolveUploadLanguage } from "@/lib/sop-filename";
+import { languageFromContentScript } from "@/lib/sop-name-resolution";
 import {
   detectFileType,
-  nameFromFilename,
   resetBunnyUploadCircuit,
   saveUploadedFile,
 } from "@/lib/upload";
@@ -76,23 +81,23 @@ export async function processSopUpload(formData: FormData) {
         relativePath,
         identifier,
       });
-      const lang = language === "Gujarati" ? "Gujarati" : "English";
       const buffer = Buffer.from(await file.arrayBuffer());
       const content = await extractTextFromBuffer(buffer, fileType);
 
-      // Name resolution (runs after content extraction so the document's own
-      // title — the authoritative source — can win over the filename guess):
-      //   explicit input → folder-segment title → DOCX content title →
-      //   filename-derived title → identifier (so name is never empty).
-      // The filename is only a fallback because it often carries junk tokens
-      // (revision/language suffixes like "Rev 02", "GUJ", "Final") that would
-      // otherwise be mistaken for the title.
-      const name =
-        nameInput ||
-        pathMeta.titleFromPath ||
-        (fileType === "docx" ? extractTitleFromContent(content, identifier) : null) ||
-        nameFromFilename(pathMeta.fileName || file.name) ||
-        identifier;
+      // Filename hints first, then correct against the document's actual script
+      // (a Gujarati doc with an English-looking filename must not stay "English").
+      const lang = languageFromContentScript(content, resolveUploadLanguage(relativePath, language));
+
+      // Language-aware name: English docs → English title, Gujarati docs → Gujarati title.
+      const name = deriveSopRecordName({
+        identifier,
+        language: lang,
+        fileType,
+        content,
+        originalFileName: pathMeta.fileName || file.name,
+        titleFromPath: pathMeta.titleFromPath,
+        explicitName: nameInput,
+      });
 
       const { fileUrl, checksum, fileSize } = await saveUploadedFile(
         file,
@@ -124,6 +129,11 @@ export async function processSopUpload(formData: FormData) {
         });
       }
 
+      const dateFields =
+        fileType === "docx"
+          ? sopDatesToDbFields(resolveSopDatesFromContent(content))
+          : {};
+
       const sharedFields = {
         name,
         identifier,
@@ -142,6 +152,7 @@ export async function processSopUpload(formData: FormData) {
         originalFileName: file.name,
         metadata: { fileSize },
         sopDocuments: [docEntry],
+        ...dateFields,
       };
 
       let sop = existing;
@@ -158,11 +169,18 @@ export async function processSopUpload(formData: FormData) {
       } else {
         sop = await SOP.create({
           ...sharedFields,
-          expiryDate: defaultExpiryDate(24),
-          effectiveDate: new Date(),
+          expiryDate: dateFields.expiryDate ?? defaultExpiryDate(24),
+          effectiveDate: dateFields.effectiveDate ?? new Date(),
           status: "uploaded",
           pipelineStatus: generateMcq ? "mcq_generating" : "idle",
         });
+      }
+
+      if (fileType === "docx" && dateFields.expiryDate) {
+        await SOP.updateMany(
+          { sopBaseId, versionNum, isObsolete: { $ne: true } },
+          { $set: dateFields },
+        );
       }
 
       if (!sop) {

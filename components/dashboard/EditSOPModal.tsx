@@ -15,7 +15,6 @@ const DEPARTMENTS = [
   "Store",
   "Engineering and Maintenance",
   "Personnel",
-  "General",
 ];
 
 function toDateInput(value?: string) {

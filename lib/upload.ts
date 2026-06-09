@@ -54,10 +54,11 @@ export function detectMediaKind(filename: string): "video" | "slide" | "thumbnai
   return null;
 }
 
-export function detectLanguageFromFilename(filename: string): "English" | "Gujarati" {
-  if (/\b(guj|gujarati|_gu|_guj)\b/i.test(filename)) return "Gujarati";
-  return "English";
-}
+export {
+  detectLanguageFromFilename,
+  nameFromFilename,
+  resolveUploadLanguage,
+} from "@/lib/sop-filename";
 
 export async function saveMediaFile(
   file: File,
@@ -86,37 +87,4 @@ export async function saveMediaFile(
     contentType: getContentType(file.name),
   });
   return { fileUrl, fileSize: buffer.length };
-}
-
-/**
- * Extract the SOP title from a filename by removing the SOP code prefix(es).
- * e.g. "PEGE06-05_Procedure_for_Garbage_Disposal.pdf" → "Procedure for Garbage Disposal"
- * e.g. "PEGE01-4_PEGE01-4_MEDICAL_CHECK_UP.docx"      → "Medical Check Up"
- * Returns "" when the filename contains only the SOP code and no title.
- */
-export function nameFromFilename(filename: string): string {
-  const base = filename.replace(/\.[^.]+$/, ""); // strip extension
-
-  // Split on every occurrence of a versioned SOP code (e.g. PEGE01-05, QAGE02-08)
-  const parts = base.split(/[A-Z]{2,}[A-Z0-9]*-\d+/i);
-
-  // Walk from the end and take the first segment that has real content
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const raw = parts[i]
-      .replace(/^[-_\s.]+/, "") // strip leading separators
-      .replace(/[-_]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (raw.length >= 3) {
-      // Normalize ALL_CAPS to Title Case for readability
-      if (raw === raw.toUpperCase() && /[A-Z]{2}/.test(raw)) {
-        return raw
-          .toLowerCase()
-          .replace(/\b\w/g, (c) => c.toUpperCase());
-      }
-      return raw;
-    }
-  }
-
-  return "";
 }

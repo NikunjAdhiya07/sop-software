@@ -18,7 +18,6 @@ const DEPARTMENTS = [
   "Store",
   "Engineering and Maintenance",
   "Personnel",
-  "General",
 ];
 
 interface UploadSOPModalProps {

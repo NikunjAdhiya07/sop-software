@@ -1,12 +1,63 @@
 import mammoth from "mammoth";
+import JSZip from "jszip";
+
+/**
+ * Pull visible text from the DOCX page headers (word/header*.xml).
+ *
+ * mammoth.extractRawText only reads the main document body, but these SOPs keep
+ * the authoritative title ("SUBJECT :") and dates ("EFF. DATE", "REVIEW DT.") in
+ * the repeating page-header table. We read just the <w:t> runs so drawing-anchor
+ * coordinates and field codes (PAGE / NUMPAGES) don't leak into the text.
+ */
+async function extractDocxHeaderText(buffer: Buffer): Promise<string> {
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const headerFiles = Object.keys(zip.files)
+      .filter((name) => /^word\/header\d*\.xml$/i.test(name))
+      .sort();
+
+    const decode = (s: string) =>
+      s
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'");
+
+    const blocks: string[] = [];
+    for (const name of headerFiles) {
+      const xml = await zip.file(name)!.async("string");
+      // Reconstruct per paragraph: runs within a <w:p> are joined with no
+      // separator (Word stores real spaces inside the runs, and a single value
+      // like a date is often split across runs), then paragraphs/cells join with
+      // a space. Match <w:t> / <w:t ...> runs only — not <w:tbl>, <w:tcPr>, etc.
+      const paragraphs = [...xml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].map((p) => p[0]);
+      const parts: string[] = [];
+      for (const para of paragraphs) {
+        const runs = [...para.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((m) => m[1]);
+        if (runs.length) parts.push(runs.join(""));
+      }
+      const text = decode(parts.join(" ")).replace(/\s+/g, " ").trim();
+      if (text) blocks.push(text);
+    }
+    return blocks.join("\n");
+  } catch {
+    return "";
+  }
+}
 
 export async function extractTextFromBuffer(
   buffer: Buffer,
   fileType: "pdf" | "docx",
 ): Promise<string> {
   if (fileType === "docx") {
-    const result = await mammoth.extractRawText({ buffer });
-    return result.value.trim() || "[Empty DOCX content]";
+    const [body, header] = await Promise.all([
+      mammoth.extractRawText({ buffer }).then((r) => r.value.trim()),
+      extractDocxHeaderText(buffer),
+    ]);
+    // Header first so the title/date extractors see SUBJECT / EFF. DATE up front.
+    const combined = [header, body].filter(Boolean).join("\n\n");
+    return combined || "[Empty DOCX content]";
   }
 
   // Basic PDF text extraction placeholder — PDF parsing requires pdf-parse
