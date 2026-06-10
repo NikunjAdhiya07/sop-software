@@ -50,6 +50,208 @@ function displaySopTitle(name: string, identifier: string): string {
 
 const registryTdBase = "px-1 py-px align-middle overflow-hidden max-w-0";
 
+/* ─── Media (video / slide) preview modal ────────────────────────────── */
+function isVideoUrl(url: string): boolean {
+  const lower = url.toLowerCase().split("?")[0];
+  return /\.(mp4|webm|mov|ogg|ogv|avi|mkv)$/.test(lower);
+}
+
+function isSlideUrl(url: string): boolean {
+  const lower = url.toLowerCase().split("?")[0];
+  return /\.(pptx?|key)$/.test(lower);
+}
+
+function mediaSummary(url: string, index: number): string {
+  try {
+    const decoded = decodeURIComponent(url.split("?")[0]);
+    const seg = decoded.split("/").filter(Boolean).pop() ?? "";
+    const name = seg.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim();
+    if (name.length > 30) return name.slice(0, 30) + "…";
+    return name || `Item ${index + 1}`;
+  } catch {
+    return `Item ${index + 1}`;
+  }
+}
+
+function MediaPreviewModal({
+  url,
+  label,
+  onClose,
+}: {
+  url: string;
+  label: string;
+  onClose: () => void;
+}) {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const officeEmbedSrc = isSlideUrl(url) ? buildOfficeOnlineEmbedUrl(url, origin) : null;
+  const officeAvailable = isSlideUrl(url) && isOfficePreviewAvailable(url, origin);
+  const [iframeLoading, setIframeLoading] = useState(true);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const modal = (
+    <div
+      className="fixed inset-0 z-200 flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+        style={{ height: isVideoUrl(url) ? "auto" : "min(90vh, 900px)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-2.5">
+          <div className="flex items-center gap-2 min-w-0">
+            {isVideoUrl(url)
+              ? <Video className="h-4 w-4 shrink-0 text-emerald-600" />
+              : <Presentation className="h-4 w-4 shrink-0 text-indigo-600" />}
+            <span className="truncate text-sm font-semibold text-gray-800">{label}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href={url}
+              download
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Download className="h-3 w-3" />
+              Download
+            </a>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded p-1 text-gray-500 hover:bg-gray-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="relative min-h-0 flex-1 bg-black/5">
+          {isVideoUrl(url) ? (
+            <video
+              src={url}
+              controls
+              autoPlay={false}
+              className="mx-auto block max-h-[70vh] w-full bg-black"
+              style={{ maxHeight: "70vh" }}
+            >
+              Your browser does not support the video tag.
+            </video>
+          ) : isSlideUrl(url) && !officeAvailable ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center text-sm text-gray-600">
+              <Presentation className="h-10 w-10 text-gray-300" />
+              <p>Office Online preview requires a public URL.</p>
+              <p className="text-xs text-gray-500">On localhost, download the file to view it.</p>
+              <a
+                href={url}
+                download
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download file
+              </a>
+            </div>
+          ) : isSlideUrl(url) ? (
+            <div className="relative h-full">
+              {iframeLoading && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-white text-sm text-gray-500">
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  Loading preview…
+                </div>
+              )}
+              <iframe
+                src={officeEmbedSrc!}
+                className="absolute inset-0 h-full w-full border-0"
+                title={`Slide preview: ${label}`}
+                allowFullScreen
+                onLoad={() => setIframeLoading(false)}
+              />
+            </div>
+          ) : (
+            /* Generic: open in new iframe (PDF-like CDN file) */
+            <div className="relative h-full">
+              {iframeLoading && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-white text-sm text-gray-500">
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  Loading…
+                </div>
+              )}
+              <iframe
+                src={url}
+                className="absolute inset-0 h-full w-full border-0"
+                title={label}
+                allowFullScreen
+                onLoad={() => setIframeLoading(false)}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(modal, document.body);
+}
+
+/* ─── Clickable pill for one media item ─────────────────────────────── */
+function MediaPill({
+  url,
+  langLabel,
+  index,
+  kind,
+}: {
+  url: string;
+  langLabel: string;
+  index: number;
+  kind: "video" | "slide";
+}) {
+  const [open, setOpen] = useState(false);
+  const summary = mediaSummary(url, index);
+  const isVideo = kind === "video";
+  const urlLower = url.toLowerCase();
+  const videoTypeLabel = urlLower.includes("explainer") ? "EX" : urlLower.includes("brief") ? "BR" : null;
+  const displayLabel = isVideo ? (videoTypeLabel ?? `${langLabel}·${index + 1}`) : langLabel;
+
+  const pillCls = isVideo
+    ? "inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1 py-px text-[8px] font-semibold text-emerald-700 hover:bg-emerald-100 cursor-pointer transition-colors max-w-full"
+    : "inline-flex items-center gap-0.5 rounded border border-indigo-200 bg-indigo-50 px-1 py-px text-[8px] font-semibold text-indigo-700 hover:bg-indigo-100 cursor-pointer transition-colors max-w-full";
+
+  const label = `${langLabel} — ${summary}`;
+
+  return (
+    <>
+      <button
+        type="button"
+        className={pillCls}
+        title={`Preview: ${label}`}
+        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+      >
+        {isVideo
+          ? <Video className="h-2 w-2 shrink-0" aria-hidden />
+          : <Presentation className="h-2 w-2 shrink-0" aria-hidden />}
+        <span className="truncate max-w-15">{displayLabel}</span>
+      </button>
+      {open && (
+        <MediaPreviewModal
+          url={url}
+          label={label}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
 /* ─── Document preview modal ─────────────────────────────────────────── */
 function DocPreviewModal({
   filePath,
@@ -287,15 +489,15 @@ export function SOPRegistryTable({
               <col style={{ width: "2%" }} />
               <col style={{ width: "5.5%" }} />
               <col style={{ width: "2.5%" }} />
-              <col style={{ width: canMutate ? "19%" : "21%" }} />
+              <col style={{ width: canMutate ? "16%" : "18%" }} />
               <col style={{ width: "3.5%" }} />
               <col style={{ width: "5%" }} />
               <col style={{ width: canMutate ? "10%" : "11%" }} />
-              <col style={{ width: "4%" }} />
+              <col style={{ width: "7.5%" }} />
               <col style={{ width: "3.5%" }} />
               <col style={{ width: "8.5%" }} />
-              <col style={{ width: "7.5%" }} />
-              <col style={{ width: "6.5%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "6%" }} />
               <col style={{ width: "7%" }} />
               <col style={{ width: "10.5%" }} />
               {canMutate && <col style={{ width: "3.5%" }} />}
@@ -561,7 +763,7 @@ const SOPRow = memo(function SOPRow({
 
         {/* Location */}
         <td className={registryTdBase}>
-          <span className="line-clamp-2 text-[8px] leading-snug text-gray-600 cursor-help" title={sop.location ?? undefined}>
+          <span className="line-clamp-2 text-[10px] font-medium leading-snug text-gray-700 cursor-help" title={sop.location ?? undefined}>
             {sop.location ?? <span className="text-gray-400">—</span>}
           </span>
         </td>
@@ -574,7 +776,7 @@ const SOPRow = memo(function SOPRow({
         {/* Department */}
         <td className={`${registryTdBase} text-gray-700`}>
           <span
-            className="inline-block max-w-full truncate rounded bg-gray-200 px-1 py-px text-[9px] font-semibold leading-tight text-gray-700"
+            className="line-clamp-2 text-[10px] font-semibold leading-snug text-gray-700 wrap-break-word"
             title={sop.department}
           >
             {sop.department}
@@ -793,15 +995,41 @@ function SOPDetailPanel({
       <div className="space-y-2">
         <SectionHeading>Training &amp; Status</SectionHeading>
         <div className="space-y-1.5 text-[10px]">
-          <div className="flex items-center gap-1.5">
-            <Video className="h-3 w-3 shrink-0 text-gray-500" />
-            <span className="font-semibold text-gray-600">Training Video:</span>
-            <span className="font-bold text-gray-800">{videoCount > 0 ? `${videoCount} available` : "Not Available"}</span>
+          <div className="flex items-start gap-1.5">
+            <Video className="h-3 w-3 shrink-0 text-gray-500 mt-0.5" />
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="font-semibold text-gray-600">Training Video</span>
+              {videoCount === 0 ? (
+                <span className="text-[10px] font-semibold italic text-amber-600">Not Available</span>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {(sop.mediaUrls?.videos?.en ?? []).map((url, i) => (
+                    <MediaPill key={url} url={url} langLabel="ENG" index={i} kind="video" />
+                  ))}
+                  {(sop.mediaUrls?.videos?.gu ?? []).map((url, i) => (
+                    <MediaPill key={url} url={url} langLabel="GUJ" index={i} kind="video" />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <Presentation className="h-3 w-3 shrink-0 text-gray-500" />
-            <span className="font-semibold text-gray-600">Slides &amp; Materials:</span>
-            <span className="font-bold text-gray-800">{slideCount > 0 ? `${slideCount} available` : "Not Available"}</span>
+          <div className="flex items-start gap-1.5">
+            <Presentation className="h-3 w-3 shrink-0 text-gray-500 mt-0.5" />
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="font-semibold text-gray-600">Slides &amp; Materials</span>
+              {slideCount === 0 ? (
+                <span className="text-[10px] font-semibold italic text-amber-600">Not Available</span>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {(sop.mediaUrls?.slides?.en ?? []).map((url, i) => (
+                    <MediaPill key={url} url={url} langLabel="ENG" index={i} kind="slide" />
+                  ))}
+                  {(sop.mediaUrls?.slides?.gu ?? []).map((url, i) => (
+                    <MediaPill key={url} url={url} langLabel="GUJ" index={i} kind="slide" />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-1.5">
             <Sparkles className="h-3 w-3 shrink-0 text-gray-500" />
@@ -860,16 +1088,13 @@ function FilesCell({ sop }: { sop: RegistrySOP }) {
     docxPath: string | undefined,
     pdfPath: string | undefined,
   ) => (
-    <div className="grid min-w-0 grid-cols-[14px_minmax(0,1fr)_2px_minmax(0,1fr)] items-center gap-x-0.5 text-left leading-none min-h-[10px]">
-      <span className="text-[8px] font-bold text-gray-500">{langLabel}</span>
+    <div className="flex min-w-0 items-center gap-1.5 text-left leading-none">
+      <span className="w-4.5 shrink-0 text-[8px] font-bold text-gray-500">{langLabel}</span>
       {docxPath ? (
         <FileLink filePath={docxPath} label="DOCX" />
       ) : (
         <span className="truncate text-[8px] font-bold leading-none text-red-600" title="DOCX missing">DOCX&nbsp;✗</span>
       )}
-      <div className="flex justify-center text-gray-300 text-[9px] select-none">
-        {docxPath && pdfPath ? "·" : ""}
-      </div>
       {pdfPath ? (
         <FileLink filePath={pdfPath} label="PDF" isPdf />
       ) : (
@@ -880,14 +1105,14 @@ function FilesCell({ sop }: { sop: RegistrySOP }) {
 
   if (!hasGu) {
     return (
-      <div className="mx-auto flex w-full min-w-0 flex-col gap-px text-left leading-none">
+      <div className="mx-auto flex w-full min-w-0 flex-col gap-1 text-left leading-none">
         {renderLangRow("ENG", sop.files.docx.en, sop.files.pdf.en)}
       </div>
     );
   }
 
   return (
-    <div className="mx-auto flex w-full min-w-0 flex-col gap-px text-left leading-none">
+    <div className="mx-auto flex w-full min-w-0 flex-col gap-1 text-left leading-none">
       {renderLangRow("ENG", sop.files.docx.en, sop.files.pdf.en)}
       {renderLangRow("GUJ", sop.files.docx.gu, sop.files.pdf.gu)}
     </div>
@@ -962,9 +1187,9 @@ function PriorVersionsCell({ sop }: { sop: RegistrySOP }) {
   const renderVersionRow = (pvs: typeof sop.priorVersions, subLabel: string) => {
     if (pvs.length === 0) return null;
     return (
-      <div className="flex min-w-0 flex-row items-start gap-x-1 leading-none">
-        <span className="w-[18px] shrink-0 text-[8px] font-bold uppercase leading-none text-gray-400">{subLabel}</span>
-        <div className="flex min-w-0 flex-1 flex-row flex-wrap gap-x-1 gap-y-0.5 items-center">
+      <div className="flex min-w-0 flex-row items-center gap-x-1.5 leading-none">
+        <span className="w-4.5 shrink-0 text-[8px] font-bold uppercase leading-none text-gray-400">{subLabel}</span>
+        <div className="flex min-w-0 flex-1 flex-row flex-wrap gap-x-2 gap-y-0.5 items-center">
           {pvs.map((pv) =>
             pv.missing ? (
               <div
@@ -976,7 +1201,7 @@ function PriorVersionsCell({ sop }: { sop: RegistrySOP }) {
                 <span className="truncate text-[8px] font-semibold italic leading-none text-amber-600">not found</span>
               </div>
             ) : (
-              <div key={`${pv.version}-${pv.language}`} className="flex min-w-0 max-w-full flex-row items-center gap-0.5">
+              <div key={`${pv.version}-${pv.language}`} className="flex min-w-0 max-w-full flex-row items-center gap-1">
                 <span className="shrink-0 text-[9px] font-bold leading-none text-green-700">V{pv.version}</span>
                 <div className="flex items-center gap-0.5 leading-none text-[8px] font-bold">
                   {pv.docx ? (
@@ -998,7 +1223,7 @@ function PriorVersionsCell({ sop }: { sop: RegistrySOP }) {
   if (isDual) {
     const fallback = sop.priorVersions.slice(0, MAX_PRIOR_VERSIONS);
     return (
-      <div className="flex min-w-0 flex-col gap-px py-0 leading-none">
+      <div className="flex min-w-0 flex-col gap-1 py-0 leading-none">
         {engVersions.length > 0 && renderVersionRow(engVersions, "ENG")}
         {gujVersions.length > 0 && renderVersionRow(gujVersions, "GUJ")}
         {engVersions.length === 0 && gujVersions.length === 0 && renderVersionRow(fallback, "ENG")}
@@ -1011,83 +1236,86 @@ function PriorVersionsCell({ sop }: { sop: RegistrySOP }) {
   return renderVersionRow(single, subLabel);
 }
 
-/* ─── Video cell ─────────────────────────────────────────────────────── */
-function VideoCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
-  const enCount = sop.media.videos.en;
-  const guCount = sop.media.videos.gu;
-  const totalCount = enCount + guCount;
-
-  const notFound = (
-    <span className="block truncate text-[8px] font-semibold italic leading-none text-amber-600" title="no video found">no video found</span>
-  );
-
-  if (!isDual) {
-    return totalCount > 0 ? (
-      <span className="text-[10px] font-bold tabular-nums text-emerald-700">{totalCount}</span>
-    ) : (
-      notFound
-    );
-  }
-
-  const renderLangRow = (langLabel: string, count: number) => (
-    <div className="flex min-w-0 items-center gap-1 text-left leading-none min-h-[10px]">
-      <span className="w-[20px] shrink-0 text-[8px] font-bold text-gray-500">{langLabel}</span>
-      {count > 0 ? (
-        <span className="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-0.5 py-px text-[8px] font-semibold text-emerald-700">
-          <Video className="h-2 w-2" aria-hidden />
-          {count}
-        </span>
+/* ─── Shared helper: render media pills for one language row ─────────── */
+function MediaLangRow({
+  langLabel,
+  urls,
+  kind,
+  noneLabel,
+}: {
+  langLabel: string;
+  urls: string[];
+  kind: "video" | "slide";
+  noneLabel: string;
+}) {
+  return (
+    <div className="flex min-w-0 items-start gap-1 text-left leading-none min-h-2.5 py-px">
+      <span className="w-5 shrink-0 text-[8px] font-bold text-gray-500 mt-px">{langLabel}</span>
+      {urls.length > 0 ? (
+        <div className="flex min-w-0 flex-wrap gap-0.5">
+          {urls.map((url, i) => (
+            <MediaPill key={url} url={url} langLabel={langLabel} index={i} kind={kind} />
+          ))}
+        </div>
       ) : (
-        notFound
+        <span className="truncate text-[8px] font-semibold italic leading-none text-amber-600">{noneLabel}</span>
       )}
     </div>
   );
+}
+
+/* ─── Video cell ─────────────────────────────────────────────────────── */
+function VideoCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
+  const enUrls = sop.mediaUrls?.videos?.en ?? [];
+  const guUrls = sop.mediaUrls?.videos?.gu ?? [];
+  const allUrls = [...enUrls, ...guUrls];
+
+  if (allUrls.length === 0 && !isDual) {
+    return <span className="text-[10px] font-bold tabular-nums text-gray-400">0</span>;
+  }
+
+  if (!isDual) {
+    return (
+      <div className="flex min-w-0 flex-wrap gap-0.5">
+        {allUrls.map((url, i) => (
+          <MediaPill key={url} url={url} langLabel="ENG" index={i} kind="video" />
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-px text-left leading-none">
-      {renderLangRow("ENG", enCount)}
-      {renderLangRow("GUJ", guCount)}
+    <div className="flex w-full min-w-0 flex-col gap-0.5 text-left leading-none">
+      <MediaLangRow langLabel="ENG" urls={enUrls} kind="video" noneLabel="no video" />
+      <MediaLangRow langLabel="GUJ" urls={guUrls} kind="video" noneLabel="no video" />
     </div>
   );
 }
 
 /* ─── Slides cell ────────────────────────────────────────────────────── */
 function SlidesCell({ sop, isDual }: { sop: RegistrySOP; isDual: boolean }) {
-  const enCount = sop.media.slides.en;
-  const guCount = sop.media.slides.gu;
-  const totalCount = enCount + guCount;
+  const enUrls = sop.mediaUrls?.slides?.en ?? [];
+  const guUrls = sop.mediaUrls?.slides?.gu ?? [];
+  const allUrls = [...enUrls, ...guUrls];
 
-  const notFound = (
-    <span className="block truncate text-[8px] font-semibold italic leading-none text-amber-600" title="no slides found">no slides found</span>
-  );
+  if (allUrls.length === 0 && !isDual) {
+    return <span className="text-[10px] font-bold tabular-nums text-gray-400">0</span>;
+  }
 
   if (!isDual) {
-    return totalCount > 0 ? (
-      <span className="text-[10px] font-bold tabular-nums text-indigo-700">{totalCount}</span>
-    ) : (
-      notFound
+    return (
+      <div className="flex min-w-0 flex-wrap gap-0.5">
+        {allUrls.map((url, i) => (
+          <MediaPill key={url} url={url} langLabel="ENG" index={i} kind="slide" />
+        ))}
+      </div>
     );
   }
 
-  const renderLangRow = (langLabel: string, count: number) => (
-    <div className="flex min-w-0 items-center gap-1 text-left leading-none min-h-[10px]">
-      <span className="w-[20px] shrink-0 text-[8px] font-bold text-gray-500">{langLabel}</span>
-      {count > 0 ? (
-        <a href="#" onClick={(e) => e.stopPropagation()}
-          className="inline-flex items-center gap-0.5 rounded border border-indigo-200 bg-indigo-50 px-1 py-px text-[9px] font-semibold text-indigo-700 hover:bg-indigo-100">
-          <Presentation className="h-2 w-2" aria-hidden />
-          {count}
-        </a>
-      ) : (
-        notFound
-      )}
-    </div>
-  );
-
   return (
-    <div className="flex w-max flex-col gap-px text-left leading-none">
-      {renderLangRow("ENG", enCount)}
-      {renderLangRow("GUJ", guCount)}
+    <div className="flex w-full min-w-0 flex-col gap-0.5 text-left leading-none">
+      <MediaLangRow langLabel="ENG" urls={enUrls} kind="slide" noneLabel="no slides" />
+      <MediaLangRow langLabel="GUJ" urls={guUrls} kind="slide" noneLabel="no slides" />
     </div>
   );
 }

@@ -21,11 +21,16 @@ export interface GuidelineClause {
 
 export async function processGuidelinePDF(buffer: Buffer): Promise<OCRResult> {
   const t0 = Date.now();
-  const parser = new PDFParse({ data: new Uint8Array(buffer) });
-  const result = await parser.getText();
+  const parser = new PDFParse({ data: buffer });
+  let result;
+  try {
+    result = await parser.getText();
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
 
-  const rawText = result.text ?? "";
-  const pageCount = result.total ?? 1;
+  const rawText = result?.text ?? "";
+  const pageCount = result?.total ?? 1;
   const avgCharsPerPage = rawText.length / Math.max(1, pageCount);
   const isScanned = avgCharsPerPage < 50;
 

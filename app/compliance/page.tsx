@@ -200,7 +200,7 @@ export default function ComplianceEnginePage() {
   const [sopLists, setSopLists] = useState<{
     completed: { identifier: string; name: string; score: number | null; status: string }[];
     cached: { identifier: string; name: string; score: number | null; status: string }[];
-    failed: { identifier: string; name: string }[];
+    failed: { identifier: string; name: string; error?: string }[];
   }>({ completed: [], cached: [], failed: [] });
   const [activeChip, setActiveChip] = useState<'completed' | 'cached' | 'failed' | null>(null);
   const [analysisComplete, setAnalysisComplete] = useState(false);
@@ -258,6 +258,21 @@ export default function ComplianceEnginePage() {
         setFolders(Object.values(folderMap));
       }
     } catch { /* silent */ } finally { setLoadingGuidelines(false); }
+  };
+
+  const handleDeleteGuideline = async (id: string, name: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`Delete guideline "${name}"?`)) return;
+    try {
+      const res = await fetch(`/api/guidelines/upload?id=${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setGuidelines(prev => prev.filter(g => g._id !== id));
+        setExpandedGuideline(v => v === id ? null : v);
+      } else {
+        alert(data.error ?? 'Delete failed');
+      }
+    } catch { alert('Delete request failed'); }
   };
 
   const fetchReports = async () => {
@@ -322,11 +337,11 @@ export default function ComplianceEnginePage() {
           setSopLists(prev => ({ ...prev, completed: [...prev.completed, { identifier: sop.identifier, name: sop.name, score: data.overallScore ?? null, status: data.complianceStatus ?? '' }] }));
         } else {
           setAnalysisStats(prev => ({ ...prev, failed: prev.failed + 1 }));
-          setSopLists(prev => ({ ...prev, failed: [...prev.failed, { identifier: sop.identifier, name: sop.name }] }));
+          setSopLists(prev => ({ ...prev, failed: [...prev.failed, { identifier: sop.identifier, name: sop.name, error: data.error }] }));
         }
-      } catch {
+      } catch (err) {
         setAnalysisStats(prev => ({ ...prev, failed: prev.failed + 1 }));
-        setSopLists(prev => ({ ...prev, failed: [...prev.failed, { identifier: sop.identifier, name: sop.name }] }));
+        setSopLists(prev => ({ ...prev, failed: [...prev.failed, { identifier: sop.identifier, name: sop.name, error: err instanceof Error ? err.message : 'Network error' }] }));
       }
       await new Promise(r => setTimeout(r, 800));
     }
@@ -354,14 +369,18 @@ export default function ComplianceEnginePage() {
           form.append('folder', group.folder);
           for (const file of group.files) form.append('files', file);
           const res = await fetch('/api/guidelines/upload', { method: 'POST', body: form });
-          const data = await res.json();
-          for (const r of data.results ?? []) allResults.push({ ...r, folder: group.folder });
-        } catch {
-          allResults.push({ name: group.folder, clauses: 0, status: 'failed', error: 'Upload failed', folder: group.folder });
+          const data = await res.json().catch(() => ({ success: false, error: `Server error (${res.status})` }));
+          if (!data.results && !data.success) {
+            allResults.push({ name: group.folder, clauses: 0, status: 'failed', error: data.error ?? `HTTP ${res.status}`, folder: group.folder });
+          } else {
+            for (const r of data.results ?? []) allResults.push({ ...r, folder: group.folder });
+          }
+        } catch (err) {
+          allResults.push({ name: group.folder, clauses: 0, status: 'failed', error: err instanceof Error ? err.message : 'Upload failed', folder: group.folder });
         }
       }
       setUploadResults(allResults);
-      fetchGuidelines();
+      if (allResults.some(r => r.status !== 'failed')) fetchGuidelines();
       setUploading(false);
       return;
     }
@@ -375,11 +394,15 @@ export default function ComplianceEnginePage() {
       form.append('folder', uploadFolder.trim());
       for (const file of Array.from(uploadFiles)) form.append('files', file);
       const res = await fetch('/api/guidelines/upload', { method: 'POST', body: form });
-      const data = await res.json();
-      setUploadResults(data.results ?? []);
-      if (data.success) fetchGuidelines();
-    } catch {
-      setUploadResults([{ name: 'Error', clauses: 0, status: 'failed', error: 'Upload request failed' }]);
+      const data = await res.json().catch(() => ({ success: false, error: `Server error (${res.status})` }));
+      if (!data.results && !data.success) {
+        setUploadResults([{ name: 'Server Error', clauses: 0, status: 'failed', error: data.error ?? `HTTP ${res.status}` }]);
+      } else {
+        setUploadResults(data.results ?? []);
+        if (data.success) fetchGuidelines();
+      }
+    } catch (err) {
+      setUploadResults([{ name: 'Error', clauses: 0, status: 'failed', error: err instanceof Error ? err.message : 'Upload request failed' }]);
     } finally { setUploading(false); }
   };
 
@@ -820,9 +843,17 @@ export default function ComplianceEnginePage() {
                 {guidelines.map(g => {
                   const stat = guidelineStats[g.name];
                   return (
-                    <div key={g._id} className="bg-gray-50 border border-gray-100 rounded-xl overflow-hidden hover:bg-purple-50 hover:border-purple-200 transition-all">
-                      <button onClick={() => setExpandedGuideline(expandedGuideline === g._id ? null : g._id)} className="w-full p-5 flex items-center justify-between text-left">
-                        <div className="flex-1 pr-4 min-w-0">
+                    <div key={g._id} className="bg-gray-50 border border-gray-100 rounded-xl overflow-hidden hover:bg-purple-50 hover:border-purple-200 transition-all group/row">
+                      {/* Row header — div not button so we can nest the delete button safely */}
+                      <div className="w-full p-5 flex items-center justify-between">
+                        {/* Clickable expand area */}
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setExpandedGuideline(expandedGuideline === g._id ? null : g._id)}
+                          onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && setExpandedGuideline(expandedGuideline === g._id ? null : g._id)}
+                          className="flex-1 pr-4 min-w-0 cursor-pointer"
+                        >
                           <div className="flex flex-wrap items-center gap-2 mb-1.5">
                             <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-[10px] font-bold uppercase tracking-wider border border-purple-200">{g.folder}</span>
                           </div>
@@ -838,9 +869,22 @@ export default function ComplianceEnginePage() {
                           {stat && stat.sopCount > 0 && (
                             <span className="px-2 py-1 bg-purple-50 text-purple-600 rounded-lg text-[10px] font-bold border border-purple-200">{stat.sopCount} SOPs</span>
                           )}
-                          <span className={`text-gray-400 transition-transform duration-300 ${expandedGuideline === g._id ? 'rotate-180' : ''}`}>▼</span>
+                          <button
+                            onClick={(e) => handleDeleteGuideline(g._id, g.name, e)}
+                            className="p-1.5 text-gray-300 hover:text-rose-500 transition-colors rounded opacity-0 group-hover/row:opacity-100"
+                            title="Delete guideline"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                          <span
+                            role="button"
+                            tabIndex={-1}
+                            aria-hidden
+                            onClick={() => setExpandedGuideline(expandedGuideline === g._id ? null : g._id)}
+                            className={`text-gray-400 transition-transform duration-300 cursor-pointer ${expandedGuideline === g._id ? 'rotate-180' : ''}`}
+                          >▼</span>
                         </div>
-                      </button>
+                      </div>
                       {expandedGuideline === g._id && (
                         <div className="px-5 pb-5 pt-2 bg-white border-t border-gray-100">
                           <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -1026,11 +1070,16 @@ export default function ComplianceEnginePage() {
               {activeChip && (
                 <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-200 max-h-48 overflow-y-auto space-y-1">
                   {sopLists[activeChip].map((item, i) => (
-                    <div key={i} className="flex items-center justify-between text-sm py-1">
-                      <span className="font-mono text-purple-600 font-bold text-xs">{item.identifier}</span>
-                      <span className="text-gray-600 text-xs truncate mx-2">{item.name}</span>
-                      {'score' in item && item.score !== null && (
-                        <span className={`text-xs font-bold ${item.score >= 8 ? 'text-emerald-600' : item.score >= 5 ? 'text-amber-600' : 'text-rose-600'}`}>{item.score}/10</span>
+                    <div key={i} className="py-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-mono text-purple-600 font-bold text-xs">{item.identifier}</span>
+                        <span className="text-gray-600 text-xs truncate mx-2">{item.name}</span>
+                        {'score' in item && item.score !== null && (
+                          <span className={`text-xs font-bold ${item.score >= 8 ? 'text-emerald-600' : item.score >= 5 ? 'text-amber-600' : 'text-rose-600'}`}>{item.score}/10</span>
+                        )}
+                      </div>
+                      {'error' in item && item.error && (
+                        <p className="text-[10px] text-rose-500 mt-0.5 leading-tight">{item.error}</p>
                       )}
                     </div>
                   ))}

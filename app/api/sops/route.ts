@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     let grouped = getServerGroupedCache();
     if (!grouped) {
       await connectDB();
-      const records = await SOP.find({}).sort({ updatedAt: -1 }).lean();
+      const records = await SOP.find({}).select("-content").sort({ updatedAt: -1 }).lean();
       grouped = groupSOPRecords(records as never[]);
       setServerGroupedCache(grouped);
     }

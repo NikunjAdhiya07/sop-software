@@ -6,27 +6,16 @@ export interface ComplianceFinding {
   clauseTitle: string;
   complianceLevel: "compliant" | "partial" | "non-compliant" | "not-applicable" | "analysis-failed";
   matchConfidence: number;
-  issueType:
-    | "missing-clause"
-    | "partial-coverage"
-    | "incorrect-implementation"
-    | "outdated-practice"
-    | "ambiguous-wording"
-    | "no-issue"
-    | "not-applicable";
   issueSeverity: "critical" | "major" | "minor" | "informational";
   sopSectionAffected: string;
   mismatchExplanation: string;
-  highlightedIssue: string;
   sopTextSnippet: string;
   guidelineRequirement: string;
   suggestedAction: string;
   suggestedText: string;
   estimatedEffort: "low" | "medium" | "high";
-  priority: number;
   guidelineName?: string;
   folderName?: string;
-  pdfName?: string;
   guidelineId?: string;
 }
 

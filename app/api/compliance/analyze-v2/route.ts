@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
-import Guideline from "@/models/Guideline";
+import SOPGuideline from "@/models/SOPGuideline";
 import { analyzeSOPComplianceV2 } from "@/lib/complianceEngineV2";
 import { saveComplianceReport } from "@/lib/complianceReportStorage";
 import { requireAuth } from "@/lib/withAuth";
@@ -24,16 +24,24 @@ export async function POST(request: NextRequest) {
     const sop = await SOP.findById(sopId).lean();
     if (!sop) return NextResponse.json({ success: false, error: "SOP not found" }, { status: 404 });
 
-    const guidelines = await Guideline.find({}).lean();
-    if (!guidelines.length) return NextResponse.json({ success: false, error: "No guidelines" }, { status: 404 });
+    const guidelines = await SOPGuideline.find({ ocrStatus: "completed" })
+      .select("name folderName pdfName clauses.clauseNumber clauses.clauseTitle clauses.clauseText")
+      .lean();
+    if (!guidelines.length) {
+      return NextResponse.json(
+        { success: false, error: "No guidelines found. Upload guideline PDFs in Step 2 first." },
+        { status: 404 },
+      );
+    }
 
     const guidelineClauses = guidelines.flatMap((g) =>
-      g.clauses.map((c) => ({
-        clauseNumber: c.number,
-        clauseTitle: c.title,
-        clauseText: c.text,
+      (g.clauses ?? []).map((c) => ({
+        clauseNumber: c.clauseNumber ?? "",
+        clauseTitle: c.clauseTitle ?? "",
+        clauseText: (c.clauseText ?? "").slice(0, 3000),
         guidelineName: g.name,
-        folderName: g.folder,
+        folderName: g.folderName,
+        pdfName: g.pdfName,
         guidelineId: g._id.toString(),
       })),
     );
@@ -46,26 +54,15 @@ export async function POST(request: NextRequest) {
       guidelineClauses,
     });
 
-    const guidelinesUsed = guidelines.map((g) => ({
-      guidelineId: g._id.toString(),
-      guidelineName: g.name,
-      folderName: g.folder,
-      totalClauses: g.clauses.length,
-      clausesChecked: g.clauses.length,
-    }));
-
     await saveComplianceReport({
       sopId: sop._id.toString(),
       sopIdentifier: sop.identifier,
       sopName: sop.name,
       sopVersion: sop.version ?? "1.0",
       department: sop.department,
-      sopContentLength: sop.content.length,
       findings: result.findings,
       overallScore: result.overallScore,
       complianceStatus: result.complianceStatus,
-      processingTimeMs: result.processingTimeMs,
-      guidelinesUsed,
     });
 
     return NextResponse.json({

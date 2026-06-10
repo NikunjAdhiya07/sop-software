@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     const buffer = await readFileBuffer(filePath);
     const filename = path.basename(filePath.split("?")[0] ?? filePath);
 
-    return new Response(buffer, {
+    return new Response(new Uint8Array(buffer), {
       headers: {
         "Content-Type": getContentType(filename),
         "Content-Disposition": `inline; filename="${filename}"`,

@@ -51,31 +51,45 @@ export async function POST(request: NextRequest) {
     }[] = [];
 
     for (const file of files) {
-      if (!file.name.toLowerCase().endsWith(".pdf")) {
-        results.push({ name: file.name, clauses: 0, status: "failed", error: "Only PDF files are supported" });
+      if (!path.basename(file.name).toLowerCase().endsWith(".pdf")) {
+        results.push({ name: path.basename(file.name), clauses: 0, status: "failed", error: "Only PDF files are supported" });
         continue;
       }
 
-      const t0 = Date.now();
       try {
         const buffer = Buffer.from(await file.arrayBuffer());
+
+        // file.name may include a relative path from webkitdirectory (e.g. "FolderName/actual.pdf")
+        const safeFileName = path.basename(file.name);
 
         // Save to disk
         const tempDir = path.join(process.cwd(), "temp", "guidelines", folderName);
         fs.mkdirSync(tempDir, { recursive: true });
-        const filePath = path.join(tempDir, file.name);
+        const filePath = path.join(tempDir, safeFileName);
         fs.writeFileSync(filePath, buffer);
 
-        // OCR / text extraction
-        const ocr = await processGuidelinePDF(buffer);
+        let ocr;
+        try {
+          // OCR / text extraction
+          ocr = await processGuidelinePDF(buffer);
+        } catch (ocrErr) {
+          // Clean up orphaned temp file
+          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+          results.push({
+            name: safeFileName, clauses: 0, status: "failed", folder: folderName,
+            error: `PDF parsing failed: ${ocrErr instanceof Error ? ocrErr.message.slice(0, 120) : "unknown error"}`,
+          });
+          continue;
+        }
 
         if (!ocr.text.trim()) {
-          results.push({ name: file.name, clauses: 0, status: "failed", error: "No text extracted (may be image-only scan)" });
+          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+          results.push({ name: safeFileName, clauses: 0, status: "failed", folder: folderName, error: "No text extracted (may be image-only scan — try a digital PDF)" });
           continue;
         }
 
         // Parse clauses and detect metadata
-        const baseName = file.name.replace(/\.pdf$/i, "").replace(/[-_]/g, " ");
+        const baseName = safeFileName.replace(/\.pdf$/i, "").replace(/[-_]/g, " ");
         const clauses = extractClauses(ocr.text, baseName);
         const guidelineType = identifyGuidelineType(ocr.text, file.name);
         const category = categorizeGuideline(ocr.text);
@@ -83,7 +97,7 @@ export async function POST(request: NextRequest) {
         const docFields = {
           folderName,
           filePath,
-          pdfName: file.name,
+          pdfName: safeFileName,
           isScanned: ocr.isScanned,
           ocrStatus: "completed" as const,
           rawText: ocr.text.slice(0, 200_000),
@@ -105,11 +119,10 @@ export async function POST(request: NextRequest) {
         }
       } catch (err) {
         results.push({
-          name: file.name, clauses: 0, status: "failed", folder: folderName,
+          name: path.basename(file.name), clauses: 0, status: "failed", folder: folderName,
           error: err instanceof Error ? err.message.slice(0, 150) : "Processing failed",
         });
       }
-      void t0; // processingTimeMs tracked internally by ocrProcessor
     }
 
     clearCache();

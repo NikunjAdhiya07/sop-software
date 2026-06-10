@@ -37,6 +37,26 @@ export function languageFromContentScript(
   return fallback;
 }
 
+/**
+ * True when stored text affirmatively belongs to the *other* language than
+ * `lang`. Placeholder content ("[...") and ambiguous text return false — only a
+ * clear script majority counts, so scanned PDFs without a text layer never
+ * trigger a mismatch.
+ */
+export function contentScriptMismatch(
+  content: string | undefined | null,
+  lang: "English" | "Gujarati",
+): boolean {
+  if (!content || content.startsWith("[") || content.startsWith("%PDF")) return false;
+  const sample = content.slice(0, 2000);
+  const gujarati = (sample.match(/[઀-૿]/g) ?? []).length;
+  const latin = (sample.match(/[A-Za-z]/g) ?? []).length;
+  if (lang === "English") return gujarati > 20 && gujarati > latin;
+  // Gujarati SOPs still contain Latin header tables (SUBJECT / EFF. DATE), so
+  // only call a "Gujarati" record English when Gujarati script is entirely absent.
+  return gujarati === 0 && latin > 100;
+}
+
 /** Strip folder paths and leading SOP-code prefixes from a stored name. */
 export function cleanSopDisplayName(raw: string | undefined | null): string {
   if (!raw) return "";

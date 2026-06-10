@@ -172,6 +172,7 @@ SOPSchema.index({ identifier: 1 });
 SOPSchema.index({ sopBaseId: 1, versionNum: 1, language: 1, fileType: 1 });
 SOPSchema.index({ status: 1 });
 SOPSchema.index({ uploadedAt: -1 });
+SOPSchema.index({ updatedAt: -1 });
 SOPSchema.index({ folderPath: 1 });
 SOPSchema.index({ parentFolder: 1 });
 SOPSchema.index({ department: 1, folderPath: 1 });

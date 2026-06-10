@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
 import { buildDashboardStats, groupSOPRecords } from "@/lib/sop-utils";
+import {
+  getServerGroupedCache,
+  setServerGroupedCache,
+} from "@/lib/cache";
 import { requireAuth } from "@/lib/withAuth";
 
 export async function GET() {
@@ -9,11 +13,17 @@ export async function GET() {
   if (auth.error) return auth.error;
 
   try {
-    await connectDB();
-    const records = await SOP.find({}).lean();
-    const registry = groupSOPRecords(records as never[]);
+    let registry = getServerGroupedCache();
+    if (!registry) {
+      await connectDB();
+      const records = await SOP.find({}).select("-content").lean();
+      registry = groupSOPRecords(records as never[]);
+      setServerGroupedCache(registry);
+    }
     const stats = buildDashboardStats(registry);
-    const departments = [...new Set(records.map((r) => r.department))].sort();
+    const departments = [
+      ...new Set(registry.filter((r) => !r.isObsolete).map((r) => r.department)),
+    ].sort();
 
     return NextResponse.json({ ...stats, departmentList: departments });
   } catch (error) {

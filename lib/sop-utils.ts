@@ -488,6 +488,10 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
       isNew: differenceInDays(new Date(), new Date(primary.createdAt)) <= 14,
       files,
       media: collectMedia(currentRecords),
+      mediaUrls: (() => {
+        const { videos, slides } = collectMediaUrls(currentRecords);
+        return { videos, slides };
+      })(),
       priorVersions,
       hasVersion,
       hasVersionDate,

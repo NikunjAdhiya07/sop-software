@@ -1,10 +1,9 @@
 "use client";
 
 import {
-  BarChart3,
   Bell,
-  ChevronDown,
   LogOut,
+  Sparkles,
   Trash2,
   User,
 } from "lucide-react";
@@ -26,25 +25,24 @@ export function DashboardHeader({ stats, onExpiryFilter }: DashboardHeaderProps)
   const total = stats?.totalSops ?? 0;
 
   return (
-    <header className="border-b border-indigo-950 bg-linear-to-r from-indigo-950 via-violet-950 to-indigo-950 text-white shadow-lg">
-      <div className="mx-auto flex max-w-[1920px] items-center justify-between px-4 py-2">
+    <header className="sticky top-0 z-40 border-b border-gray-200 bg-gray-100 shadow-sm">
+      <div className="mx-auto flex max-w-[1920px] items-center justify-between px-4 py-2.5">
 
         {/* ── Left: Logo + Title ── */}
         <div className="flex items-center gap-3">
-          {/* App logo */}
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-700/60 ring-1 ring-violet-400/30">
-            <BarChart3 className="h-4 w-4 text-violet-200" />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-600">
+            <Sparkles className="h-4 w-4 text-white" />
           </div>
 
           <div>
-            <h1 className="text-sm font-bold tracking-tight text-white">
+            <h1 className="text-base font-bold tracking-tight text-gray-900">
               SOP Control — Master Dashboard
             </h1>
-            <p className="text-[11px] text-violet-300">
+            <p className="text-[10px] text-gray-600">
               Welcome,{" "}
-              <span className="font-semibold text-white">{username}</span>
+              <span className="font-semibold text-gray-800">{username}</span>
               {total > 0 && (
-                <span className="ml-3 rounded bg-white/10 px-2 py-0.5 text-[10px] text-violet-200">
+                <span className="ml-3 rounded bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700">
                   {total} SOPs
                 </span>
               )}
@@ -60,7 +58,7 @@ export function DashboardHeader({ stats, onExpiryFilter }: DashboardHeaderProps)
               <button
                 type="button"
                 onClick={() => onExpiryFilter("Expired")}
-                className="rounded border border-red-400/40 bg-red-500/80 px-2.5 py-0.5 text-[10px] font-semibold text-white hover:bg-red-600"
+                className="rounded border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100"
               >
                 {expired} SOPs Expired
               </button>
@@ -68,45 +66,46 @@ export function DashboardHeader({ stats, onExpiryFilter }: DashboardHeaderProps)
               <button
                 type="button"
                 onClick={() => onExpiryFilter("Near")}
-                className="rounded border border-amber-400/40 bg-amber-400/80 px-2.5 py-0.5 text-[10px] font-semibold text-amber-950 hover:bg-amber-500"
+                className="rounded border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-100"
               >
                 {nearExpiry} near expiry
               </button>
             ) : total > 0 ? (
-              <span className="rounded border border-emerald-500/30 bg-emerald-600/50 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-200">
+              <span className="rounded border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                 All within review cycle
               </span>
             ) : null}
           </div>
 
           {/* User info chip */}
-          <div className="flex items-center gap-1.5 rounded-lg bg-white/10 px-2.5 py-1">
-            <User className="h-3.5 w-3.5 text-violet-200" />
-            <span className="text-xs font-medium text-white">{username}</span>
-            <span className="rounded bg-amber-400 px-1.5 py-px text-[9px] font-bold uppercase text-amber-950">
-              {role}
-            </span>
-            <ChevronDown className="h-3 w-3 text-violet-300 opacity-70" />
+          <div className="flex items-center gap-1.5 border-l border-gray-200/60 pl-3">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-100">
+              <User className="h-3.5 w-3.5 text-purple-600" />
+            </div>
+            <div className="flex flex-col leading-none">
+              <span className="text-[11px] font-semibold text-gray-800">{username}</span>
+              <span className="text-[9px] font-bold uppercase tracking-wide text-gray-500">{role}</span>
+            </div>
           </div>
 
           {/* Icon buttons */}
           <button
             type="button"
-            className="rounded p-1.5 text-violet-200 hover:bg-white/10 hover:text-white"
+            className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
             aria-label="Notifications"
           >
             <Bell className="h-4 w-4" />
           </button>
           <button
             type="button"
-            className="rounded p-1.5 text-violet-200 hover:bg-white/10 hover:text-white"
+            className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
             aria-label="Deleted items"
           >
             <Trash2 className="h-4 w-4" />
           </button>
           <button
             type="button"
-            className="rounded p-1.5 text-violet-200 hover:bg-white/10 hover:text-white"
+            className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
             aria-label="Logout"
             onClick={() => signOut({ callbackUrl: "/login" })}
           >

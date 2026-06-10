@@ -3,8 +3,55 @@ import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
 import { invalidateDashboardSopsCache } from "@/lib/cache";
 import { requireAuth } from "@/lib/withAuth";
+import * as XLSX from "xlsx";
 
-function parseLocationRows(text: string) {
+/**
+ * Parse the standard location Excel format:
+ *   Col A – Sr. No.
+ *   Col B – DP No. (physical location, merged across rows)
+ *   Col C – SOP No. / Annexure No.
+ *   Col D – SOP Title (ignored)
+ *
+ * Section header rows (e.g. "WADHWAN-2") and "NA" SOP entries are skipped.
+ * The DP No. value carries forward when a cell is blank (merged-cell behaviour).
+ */
+function parseLocationXlsx(buffer: ArrayBuffer): Array<{ identifier: string; location: string }> {
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+  const results: Array<{ identifier: string; location: string }> = [];
+  let currentLocation = "";
+
+  for (const row of rows) {
+    const dpNo = String(row[1] ?? "").trim();
+    const sopNo = String(row[2] ?? "").trim();
+
+    // Skip completely empty rows
+    if (!dpNo && !sopNo) continue;
+
+    // Update current location when the DP No. cell is non-empty
+    if (dpNo) currentLocation = dpNo;
+
+    // Skip rows with no SOP number, "NA" placeholders, or section headers
+    // (section headers appear in col B only, with nothing in col C)
+    if (!sopNo || sopNo.toUpperCase() === "NA") continue;
+
+    // Skip rows where the "SOP No." cell looks like a column heading
+    if (/sop\s*no|annexure/i.test(sopNo)) continue;
+
+    results.push({ identifier: sopNo, location: currentLocation });
+  }
+
+  return results;
+}
+
+/**
+ * Fallback: parse a simple 2-column CSV/TSV file.
+ *   Col 1 – identifier
+ *   Col 2 – location
+ */
+function parseLocationCsv(text: string): Array<{ identifier: string; location: string }> {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return [];
 
@@ -35,8 +82,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    const text = await file.text();
-    const rows = parseLocationRows(text);
+    const isXlsx = /\.(xlsx|xls)$/i.test(file.name);
+    let rows: Array<{ identifier: string; location: string }>;
+
+    if (isXlsx) {
+      const buffer = await file.arrayBuffer();
+      rows = parseLocationXlsx(buffer);
+    } else {
+      const text = await file.text();
+      rows = parseLocationCsv(text);
+    }
+
     if (!rows.length) {
       return NextResponse.json({ error: "No valid location rows found in file" }, { status: 400 });
     }
@@ -50,17 +106,11 @@ export async function POST(request: NextRequest) {
       });
 
       if (!group.length) {
-        results.push({
-          identifier: row.identifier,
-          success: false,
-          error: "SOP not found",
-        });
+        results.push({ identifier: row.identifier, success: false, error: "SOP not found" });
         continue;
       }
 
-      await Promise.all(
-        group.map((sop) => sop.updateOne({ location: row.location })),
-      );
+      await Promise.all(group.map((sop) => sop.updateOne({ location: row.location })));
       results.push({ identifier: row.identifier, success: true });
     }
 

@@ -180,7 +180,7 @@ export function DashboardClient() {
   };
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-gray-50">
+    <div className="flex min-h-screen flex-col overflow-x-hidden bg-[#f8f9fa] text-gray-800">
       <DashboardHeader
         stats={stats}
         onExpiryFilter={(tier) => setFilter({ expiry: tier })}

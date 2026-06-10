@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     const buffer = await readFileBuffer(filePath);
 
     // PDF — serve directly with inline display header
-    return new Response(buffer, {
+    return new Response(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": "inline",

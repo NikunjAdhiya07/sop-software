@@ -46,7 +46,7 @@ function filterPdfFiles(files: File[]) {
 }
 
 function filterLocationFiles(files: File[]) {
-  return files.filter((f) => /\.(csv|txt|tsv)$/i.test(f.name));
+  return files.filter((f) => /\.(xlsx|xls|csv|txt|tsv)$/i.test(f.name));
 }
 
 function filterMediaFiles(files: File[]) {
@@ -55,11 +55,17 @@ function filterMediaFiles(files: File[]) {
   );
 }
 
-const SOP_UPLOAD_BATCH_SIZE = 8;
+const SOP_UPLOAD_BATCH_SIZE = 4;
 const MEDIA_UPLOAD_BATCH_SIZE = 5;
 
 function initialProgress(total: number): UploadProgress {
   return { completed: 0, total };
+}
+
+function isNetworkError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return lower.includes("failed to fetch") || lower.includes("network") || lower.includes("load failed");
 }
 
 async function uploadSopBatchOnce(
@@ -74,12 +80,61 @@ async function uploadSopBatchOnce(
   formData.append("generateMcq", String(generateMcq));
   appendFilesWithPaths(formData, files);
 
-  const res = await fetch("/api/sop/bulk-folder-upload", { method: "POST", body: formData });
-  const data = await res.json();
+  let res: Response;
+  try {
+    res = await fetch("/api/sop/bulk-folder-upload", { method: "POST", body: formData });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Network error";
+    return files.map((f) => ({ file: f.name, success: false, error: msg }));
+  }
+
+  let data: { results?: UploadResult[]; error?: string };
+  try {
+    data = await res.json();
+  } catch {
+    return files.map((f) => ({ file: f.name, success: false, error: `HTTP ${res.status} (non-JSON response)` }));
+  }
+
   if (!res.ok) {
     return [{ file: "Server", success: false, error: data.error ?? `HTTP ${res.status}` }];
   }
   return data.results ?? [];
+}
+
+// When a whole batch drops (connection reset / timeout), retry each file
+// one-at-a-time so a single large file cannot drag down the others.
+async function uploadSopBatchWithFallback(
+  files: File[],
+  language: string,
+  department: string,
+  generateMcq: boolean,
+): Promise<UploadResult[]> {
+  if (files.length === 1) {
+    // Single-file: one retry before giving up.
+    const [first] = await uploadSopBatchOnce(files, language, department, generateMcq);
+    if (first.success || !isNetworkError(first.error)) return [first];
+    return uploadSopBatchOnce(files, language, department, generateMcq);
+  }
+
+  const results = await uploadSopBatchOnce(files, language, department, generateMcq);
+
+  // If every result is a network failure the whole request was dropped — fall
+  // back to one file at a time so the others can still succeed.
+  const allNetworkFailed = results.every((r) => !r.success && isNetworkError(r.error));
+  if (!allNetworkFailed) return results;
+
+  const retried: UploadResult[] = [];
+  for (const file of files) {
+    const [result] = await uploadSopBatchOnce([file], language, department, generateMcq);
+    // One extra attempt for individual network errors.
+    if (!result.success && isNetworkError(result.error)) {
+      const [retry] = await uploadSopBatchOnce([file], language, department, generateMcq);
+      retried.push(retry);
+    } else {
+      retried.push(result);
+    }
+  }
+  return retried;
 }
 
 async function uploadSopBatch(
@@ -94,7 +149,7 @@ async function uploadSopBatch(
 
   for (let start = 0; start < total; start += SOP_UPLOAD_BATCH_SIZE) {
     const batch = files.slice(start, start + SOP_UPLOAD_BATCH_SIZE);
-    const batchResults = await uploadSopBatchOnce(batch, language, department, generateMcq);
+    const batchResults = await uploadSopBatchWithFallback(batch, language, department, generateMcq);
     allResults.push(...batchResults);
     onProgress?.(Math.min(start + batch.length, total), total);
   }
@@ -568,28 +623,40 @@ export function BulkLocationUploadModal({
     >
       <HowItWorksBox>
         <p>
-          Upload a <strong>CSV</strong> or <strong>TSV</strong> file with two columns:{" "}
-          <strong>identifier</strong> and <strong>location</strong>.
+          Upload the standard location <strong>Excel (.xlsx)</strong> file. The sheet must have:
         </p>
         <p>
-          Example: <code className="rounded bg-sky-100 px-1">QAGE01-10,QA-DP-01</code>
+          <strong>Col B</strong> — DP No. (physical location, e.g. <code className="rounded bg-sky-100 px-1">NDP-3 (Secondary PM Store)</code>)<br />
+          <strong>Col C</strong> — SOP No. / Annexure No. (e.g. <code className="rounded bg-sky-100 px-1">STGE08-02</code>)
         </p>
-        <p>Each row updates the location for all records matching that SOP number.</p>
+        <p>
+          The DP No. carries forward across merged rows. Section headers and <strong>NA</strong>{" "}
+          entries are skipped automatically.
+        </p>
+        <p>
+          A simple <strong>CSV/TSV</strong> with columns <em>identifier</em> and{" "}
+          <em>location</em> is also accepted as a fallback format.
+        </p>
       </HowItWorksBox>
       <BulkUploadDropZone
         accent="sky"
         files={files}
         uploading={uploading}
-        accept={{ "text/csv": [".csv"], "text/plain": [".txt", ".tsv"] }}
+        accept={{
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+          "application/vnd.ms-excel": [".xls"],
+          "text/csv": [".csv"],
+          "text/plain": [".txt", ".tsv"],
+        }}
         primaryLabel="Select file"
-        hint="Drag a CSV/TSV file here, or"
+        hint="Drag an Excel or CSV file here, or"
         fileInputRef={fileInputRef}
         folderInputRef={folderInputRef}
         onFilesAdded={(incoming) => addFiles(incoming.slice(0, 1))}
         showFolderButton={false}
       />
       <HiddenBulkInputs
-        accept=".csv,.txt,.tsv"
+        accept=".xlsx,.xls,.csv,.txt,.tsv"
         fileInputRef={fileInputRef}
         folderInputRef={folderInputRef}
         onChange={handleFileChange}

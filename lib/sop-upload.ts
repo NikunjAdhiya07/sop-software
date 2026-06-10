@@ -15,7 +15,10 @@ import {
   versionFromIdentifier,
 } from "@/lib/sop-utils";
 import { resolveUploadLanguage } from "@/lib/sop-filename";
-import { languageFromContentScript } from "@/lib/sop-name-resolution";
+import {
+  contentScriptMismatch,
+  languageFromContentScript,
+} from "@/lib/sop-name-resolution";
 import {
   detectFileType,
   resetBunnyUploadCircuit,
@@ -129,6 +132,16 @@ export async function processSopUpload(formData: FormData) {
         });
       }
 
+      // A matched record whose stored text is clearly the other script was
+      // mislabelled when it was uploaded. Overwriting it would destroy the only
+      // copy of that language — retag it instead and save this file as a new
+      // record, so the pair surfaces as a dual-language SOP.
+      if (existing && fileType === "docx" && contentScriptMismatch(existing.content, lang)) {
+        const actualLang = lang === "English" ? "Gujarati" : "English";
+        await existing.updateOne({ language: actualLang });
+        existing = null;
+      }
+
       const dateFields =
         fileType === "docx"
           ? sopDatesToDbFields(resolveSopDatesFromContent(content))
@@ -138,6 +151,7 @@ export async function processSopUpload(formData: FormData) {
         name,
         identifier,
         department,
+        language: lang,
         fileUrl,
         fileType,
         content,

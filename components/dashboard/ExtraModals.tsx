@@ -249,10 +249,12 @@ export function AdminToolsModal({
   open,
   onClose,
   isAdmin,
+  onSuccess,
 }: {
   open: boolean;
   onClose: () => void;
   isAdmin: boolean;
+  onSuccess?: () => void;
 }) {
   const [message, setMessage] = useState("");
   const [confirmDeleteVersioned, setConfirmDeleteVersioned] = useState(false);
@@ -294,6 +296,7 @@ export function AdminToolsModal({
     setMessage(
       `Done: ${data.migrated} migrated, ${data.failed} failed, ${data.skipped} skipped`,
     );
+    onSuccess?.();
   };
 
   const runDeleteVersionedSops = async () => {
@@ -309,6 +312,7 @@ export function AdminToolsModal({
       setMessage(
         `Done: ${data.familiesDeleted} SOP families deleted (${data.recordsDeleted} records, ${data.filesDeleted} files). Families: ${data.families.join(", ") || "none"}`,
       );
+      onSuccess?.();
     } finally {
       setDeletingVersioned(false);
       setConfirmDeleteVersioned(false);

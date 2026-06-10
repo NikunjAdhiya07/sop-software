@@ -341,6 +341,20 @@ export function DepartmentCapsules({ capsules }: DepartmentCapsulesProps) {
 
   const applyFilter = (department: string, patch: Record<string, string | boolean | undefined> = {}) => {
     setFilter({
+      // Clear all active filters so capsule clicks always show exactly those SOPs
+      language: undefined,
+      expiry: undefined,
+      fileType: undefined,
+      media: undefined,
+      versionStatus: undefined,
+      versionDate: undefined,
+      dualLanguage: undefined,
+      search: undefined,
+      locations: [],
+      versions: [],
+      dateFrom: undefined,
+      dateTo: undefined,
+      absoluteSop: undefined,
       department: department === "Total" ? undefined : department,
       ...patch,
     });

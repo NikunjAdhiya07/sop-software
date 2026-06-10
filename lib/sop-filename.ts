@@ -3,7 +3,10 @@
  * Keep Node-only upload logic in lib/upload.ts.
  */
 
+const GUJARATI_SCRIPT = /[઀-૿]/;
+
 export function detectLanguageFromFilename(filename: string): "English" | "Gujarati" {
+  if (GUJARATI_SCRIPT.test(filename)) return "Gujarati";
   if (/\b(guj|gujarati|_gu|_guj)\b/i.test(filename)) return "Gujarati";
   return "English";
 }
@@ -14,6 +17,10 @@ export function resolveUploadLanguage(
   formLanguage: string,
 ): "English" | "Gujarati" {
   const haystack = relativePath.replace(/\\/g, "/");
+  // Gujarati script in the file/folder name is the strongest signal — English
+  // documents never carry Gujarati characters in their names, and scanned PDFs
+  // have no extractable text for the content-based check to correct with later.
+  if (GUJARATI_SCRIPT.test(haystack)) return "Gujarati";
   if (/\b(gujarati|guj)\b/i.test(haystack)) return "Gujarati";
   if (/\b(english|eng)\b/i.test(haystack)) return "English";
   const fileName = haystack.split("/").pop() ?? haystack;

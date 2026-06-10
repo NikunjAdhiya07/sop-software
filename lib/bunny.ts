@@ -6,13 +6,28 @@ import { buildCdnPath, isCdnUrl } from "@/lib/file-urls";
 export { isBunnyConfigured } from "@/lib/validateEnv";
 export { buildCdnPath, isCdnUrl } from "@/lib/file-urls";
 
-const DEFAULT_BUNNY_UPLOAD_TIMEOUT_MS = 120_000;
+// 60 s per attempt; override with BUNNY_UPLOAD_TIMEOUT_MS env var.
+const DEFAULT_BUNNY_UPLOAD_TIMEOUT_MS = 60_000;
 
 function bunnyUploadTimeoutMs(): number {
   const raw = process.env.BUNNY_UPLOAD_TIMEOUT_MS;
   if (!raw) return DEFAULT_BUNNY_UPLOAD_TIMEOUT_MS;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BUNNY_UPLOAD_TIMEOUT_MS;
+}
+
+async function uploadToBunnyOnce(
+  buffer: Buffer,
+  url: string,
+  apiKey: string,
+  contentType: string,
+): Promise<Response> {
+  return fetch(url, {
+    method: "PUT",
+    headers: { AccessKey: apiKey, "Content-Type": contentType },
+    body: new Uint8Array(buffer),
+    signal: AbortSignal.timeout(bunnyUploadTimeoutMs()),
+  });
 }
 
 export async function uploadToBunny(
@@ -24,15 +39,13 @@ export async function uploadToBunny(
   const normalizedPath = cdnPath.startsWith("/") ? cdnPath.slice(1) : cdnPath;
   const url = `https://${hostname}/${storageZone}/${normalizedPath}`;
 
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: {
-      AccessKey: apiKey,
-      "Content-Type": contentType,
-    },
-    body: new Uint8Array(buffer),
-    signal: AbortSignal.timeout(bunnyUploadTimeoutMs()),
-  });
+  let res: Response;
+  try {
+    res = await uploadToBunnyOnce(buffer, url, apiKey, contentType);
+  } catch {
+    // One retry for transient network / timeout errors.
+    res = await uploadToBunnyOnce(buffer, url, apiKey, contentType);
+  }
 
   if (!res.ok) {
     const text = await res.text();

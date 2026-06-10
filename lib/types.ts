@@ -39,6 +39,10 @@ export interface RegistrySOP {
     videos: { en: number; gu: number };
     slides: { en: number; gu: number };
   };
+  mediaUrls: {
+    videos: MediaFileLinks;
+    slides: MediaFileLinks;
+  };
   priorVersions: PriorVersion[];
   hasVersion: boolean;
   hasVersionDate: boolean;

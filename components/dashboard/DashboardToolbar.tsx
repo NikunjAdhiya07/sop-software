@@ -79,7 +79,7 @@ export function DashboardToolbar({
       <div className="mx-auto flex max-w-[1920px] flex-wrap items-center gap-1.5 px-4 py-2">
 
         {/* Guidelines */}
-        <Btn size="sm" onClick={toggleGuidelines}>
+        <Btn size="sm" className="border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100" onClick={toggleGuidelines}>
           <BookOpen className="h-3 w-3" /> Guidelines
         </Btn>
 
@@ -88,10 +88,10 @@ export function DashboardToolbar({
           <BarChart3 className="h-3 w-3" /> Show charts
         </Btn>
 
-        {/* Prior Ver. Archive – amber with count; admin can clear incorrect mappings */}
+        {/* Prior Ver. Archive – amber outlined; admin can clear incorrect mappings */}
         <Btn
           size="sm"
-          className="border-amber-400 bg-amber-400 text-amber-950 hover:bg-amber-500"
+          className="border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
           onClick={isAdmin ? () => setClearPriorOpen(true) : undefined}
           title={
             isAdmin
@@ -101,7 +101,7 @@ export function DashboardToolbar({
         >
           <Archive className="h-3 w-3" />
           Prior Ver. Archive
-          <span className="ml-0.5 rounded bg-amber-950/20 px-1.5 py-px text-[10px] font-bold leading-none">
+          <span className="ml-0.5 rounded border border-amber-200 bg-white px-1.5 py-px text-[10px] font-bold leading-none text-amber-800">
             {stats?.priorVersionCount ?? 0}
           </span>
         </Btn>
@@ -118,15 +118,15 @@ export function DashboardToolbar({
 
         {canMutate && (
           <>
-            <Btn size="sm" onClick={() => setFolderUploadOpen(true)}>
+            <Btn size="sm" className="border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100" onClick={() => setFolderUploadOpen(true)}>
               <Upload className="h-3 w-3" /> Version Fetch Upload
             </Btn>
-            <Btn size="sm" onClick={() => setVideoUploadOpen(true)}>
+            <Btn size="sm" className="border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100" onClick={() => setVideoUploadOpen(true)}>
               <Video className="h-3 w-3" /> Upload Videos &amp; Slides
             </Btn>
 
             {/* BULK separator */}
-            <span className="px-0.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+            <span className="px-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-400">
               BULK
             </span>
 
@@ -174,18 +174,18 @@ export function DashboardToolbar({
           </>
         )}
 
-        {/* Training Matrix – green filled */}
+        {/* Training Matrix – teal outlined */}
         <Btn
           size="sm"
-          className="border-green-600 bg-green-600 text-white hover:bg-green-700"
+          className="border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100"
         >
           <BarChart3 className="h-3 w-3" /> Training Matrix
         </Btn>
 
-        {/* SOP Scheduler – green filled */}
+        {/* SOP Scheduler – violet outlined */}
         <Btn
           size="sm"
-          className="border-green-600 bg-green-600 text-white hover:bg-green-700"
+          className="border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100"
         >
           <CalendarDays className="h-3 w-3" /> SOP Scheduler
         </Btn>
@@ -193,23 +193,23 @@ export function DashboardToolbar({
         {canMutate && (
           <>
             {/* SINGLE separator */}
-            <span className="px-0.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+            <span className="px-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-400">
               SINGLE
             </span>
 
-            {/* Obsolete SOPs – red filled */}
+            {/* Obsolete SOPs – rose outlined */}
             <Btn
               size="sm"
-              className="border-red-500 bg-red-500 text-white hover:bg-red-600"
+              className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
               onClick={() => setFilter({ obsoleteOnly: !filters.obsoleteOnly })}
             >
               Obsolete SOPs
             </Btn>
 
-            {/* SOP Upload – green outlined */}
+            {/* SOP Upload – emerald outlined */}
             <Btn
               size="sm"
-              className="border-green-600 text-green-700 hover:bg-green-50"
+              className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
               onClick={() => setUploadModalOpen(true)}
             >
               <Plus className="h-3 w-3" /> SOP Upload
@@ -217,19 +217,19 @@ export function DashboardToolbar({
           </>
         )}
 
-        {/* Compliance Engine – purple filled */}
+        {/* Compliance Engine – purple outlined */}
         <Btn
           size="sm"
-          className="border-purple-600 bg-purple-600 text-white hover:bg-purple-700"
+          className="border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
           onClick={() => router.push("/compliance")}
         >
           <Shield className="h-3 w-3" /> Compliance Engine
         </Btn>
 
-        {/* MCQ Bank – dark navy filled */}
+        {/* MCQ Bank – slate outlined */}
         <Btn
           size="sm"
-          className="border-slate-800 bg-slate-800 text-white hover:bg-slate-900"
+          className="border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100"
           onClick={() => router.push("/mcq-bank")}
         >
           <BarChart3 className="h-3 w-3" /> MCQ Bank
@@ -239,7 +239,7 @@ export function DashboardToolbar({
         {isAdmin && (
           <Btn
             size="sm"
-            className="border-sky-300 bg-sky-50 text-sky-800 hover:bg-sky-100"
+            className="border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100"
             onClick={() => setAdminOpen(true)}
             title="Admin tools: fix SOP names, migrate files, delete versioned SOPs"
           >

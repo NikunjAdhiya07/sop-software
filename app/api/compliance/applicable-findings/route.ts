@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
-import ComplianceAnalysis from "@/models/ComplianceAnalysis";
+import ComplianceReport from "@/models/ComplianceReport";
 import { requireAuth } from "@/lib/withAuth";
 
 export async function GET(request: NextRequest) {
@@ -12,40 +12,75 @@ export async function GET(request: NextRequest) {
     const department = request.nextUrl.searchParams.get("department");
     const status = request.nextUrl.searchParams.get("status");
 
-    const query: Record<string, unknown> = {};
-    const analyses = await ComplianceAnalysis.find(query).sort({ analyzedAt: -1 }).lean();
+    const query: Record<string, unknown> = { analysisStatus: "completed" };
+    if (department && department !== "Total") query.department = department;
 
-    let findings = analyses.flatMap((a) =>
-      a.findings.map((f) => ({
-        ...f,
-        sopIdentifier: a.sopIdentifier,
-        guidelineName: a.guidelineName,
-        score: a.score,
-        analyzedAt: a.analyzedAt,
+    const reports = await ComplianceReport.find(query)
+      .sort({ analyzedAt: -1 })
+      .select("sopIdentifier sopName department findings analyzedAt overallScore complianceStatus")
+      .lean();
+
+    let findings = reports.flatMap((r) =>
+      (r.findings ?? []).map((f) => ({
+        ...(f as unknown as Record<string, unknown>),
+        sopIdentifier: r.sopIdentifier,
+        sopName: r.sopName,
+        department: r.department,
+        overallScore: r.overallScore,
+        analyzedAt: r.analyzedAt,
       })),
-    );
+    ) as Array<Record<string, unknown>>;
 
     if (status && status !== "All") {
-      findings = findings.filter((f) => f.status === status);
-    }
-
-    if (department && department !== "Total") {
-      // Filter would join SOP department — simplified via sopIdentifier prefix patterns
-      findings = findings.filter(() => true);
+      findings = findings.filter(
+        (f) => f.complianceLevel === status || f.complianceLevel === status.toLowerCase(),
+      );
     }
 
     const summary = {
       total: findings.length,
-      compliant: findings.filter((f) => f.status === "compliant").length,
-      partial: findings.filter((f) => f.status === "partial").length,
-      nonCompliant: findings.filter((f) => f.status === "non-compliant").length,
-      notApplicable: findings.filter((f) => f.status === "not-applicable").length,
+      compliant: findings.filter((f) => f.complianceLevel === "compliant").length,
+      partial: findings.filter((f) => f.complianceLevel === "partial").length,
+      nonCompliant: findings.filter((f) => f.complianceLevel === "non-compliant").length,
+      notApplicable: findings.filter((f) => f.complianceLevel === "not-applicable").length,
     };
 
     return NextResponse.json({ findings, summary });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to fetch findings" },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const auth = await requireAuth(["admin", "trainer", "viewer"]);
+  if (auth.error) return auth.error;
+
+  try {
+    await connectDB();
+    const { reportId, findingIds } = await request.json();
+
+    if (!reportId) {
+      return NextResponse.json({ success: false, error: "reportId is required" }, { status: 400 });
+    }
+
+    const report = await ComplianceReport.findById(reportId).lean();
+    if (!report) {
+      return NextResponse.json({ success: false, error: "Report not found" }, { status: 404 });
+    }
+
+    const idsToMark: string[] = Array.isArray(findingIds) ? findingIds : [];
+
+    return NextResponse.json({
+      success: true,
+      reportId,
+      markedFindings: idsToMark.length,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to process findings" },
       { status: 500 },
     );
   }
