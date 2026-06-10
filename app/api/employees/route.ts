@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { connectDB } from '@/lib/mongodb';
 import { getEmployeeAssignmentsMap } from '@/lib/employeeAssignments';
 import { generateUniqueLmsUsername } from '@/lib/lms-credentials';
+import { syncEmployeesFromMatrix } from '@/lib/syncEmployeesFromMatrix';
 import Employee from '@/models/Employee';
 
 export const dynamic = 'force-dynamic';
@@ -11,6 +12,16 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   try {
     await connectDB();
+
+    // Keep the Employee roster mirrored to the training matrix on every read,
+    // so the page is always in sync without a manual "Sync from Matrix" step.
+    // Best-effort: a sync hiccup must never block listing employees.
+    try {
+      await syncEmployeesFromMatrix();
+    } catch (syncErr) {
+      console.error('Auto-sync from matrix failed:', syncErr);
+    }
+
     const { searchParams } = new URL(req.url);
     const department      = searchParams.get('department');
     const search          = searchParams.get('search') || '';

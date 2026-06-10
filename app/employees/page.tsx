@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { useAuthGuard } from '@/hooks/useAuthGuard';
 import {
   ArrowLeft, Plus, Search, Pencil, Trash2, X, Check,
-  UserRound, RefreshCw, AlertTriangle, FileText, GraduationCap, KeyRound,
+  UserRound, RefreshCw, AlertTriangle, FileText, GraduationCap, KeyRound, Copy,
+  UserX, UserCheck, Loader2, Trophy,
 } from 'lucide-react';
 
 const DEPARTMENTS = ['QA', 'QC', 'Microbiology', 'Production', 'Store', 'Engineering', 'Personnel'] as const;
@@ -41,6 +42,15 @@ interface Employee {
   lmsUsername?: string;
   hasLmsPassword?: boolean;
   assignments?: SopAssignment[];
+}
+
+interface TrainingStatus {
+  employeeId: string;
+  totalSops: number;
+  completedSops: number;
+  certCount: number;
+  overallPct: number;
+  status: 'completed' | 'in_progress' | 'not_started';
 }
 
 function AssignmentsModal({
@@ -362,6 +372,122 @@ function DeleteConfirm({ employee, onClose, onDeleted }: { employee: Employee; o
   );
 }
 
+// ─── Generated-credentials modal ───────────────────────────────────────────────
+
+interface GeneratedCredential {
+  name: string;
+  username: string;
+  password: string;
+}
+
+function CredentialsModal({
+  credentials,
+  onClose,
+}: {
+  credentials: GeneratedCredential[];
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const copy = async (text: string, tag: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(tag);
+      setTimeout(() => setCopied((c) => (c === tag ? null : c)), 1500);
+    } catch { /* clipboard unavailable */ }
+  };
+
+  const copyAll = () => {
+    const text = credentials
+      .map((c) => `${c.name}\t${c.username}\t${c.password}`)
+      .join('\n');
+    copy(`Name\tUsername\tPassword\n${text}`, '__all__');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
+      <div
+        className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between border-b border-gray-100 px-5 py-4">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-50 text-green-600">
+              <KeyRound className="h-4.5 w-4.5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-gray-800">Logins generated</h2>
+              <p className="text-xs text-gray-400">
+                {credentials.length} credential{credentials.length !== 1 ? 's' : ''} · copy now, passwords aren’t shown again
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-[11px] text-amber-700">
+          <span className="flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Passwords are stored encrypted and can’t be retrieved later — share them now.
+          </span>
+          <button
+            onClick={copyAll}
+            className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-2.5 py-1 font-medium text-amber-700 hover:bg-amber-100"
+          >
+            {copied === '__all__' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied === '__all__' ? 'Copied' : 'Copy all'}
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase tracking-wider text-gray-500">
+              <tr>
+                <th className="px-5 py-2.5">Name</th>
+                <th className="px-3 py-2.5">Username</th>
+                <th className="px-3 py-2.5">Password</th>
+                <th className="px-3 py-2.5 w-10" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {credentials.map((c) => (
+                <tr key={c.username} className="hover:bg-gray-50">
+                  <td className="px-5 py-2.5 font-medium text-gray-800">{c.name}</td>
+                  <td className="px-3 py-2.5 font-mono text-gray-700">{c.username}</td>
+                  <td className="px-3 py-2.5 font-mono text-gray-700">{c.password}</td>
+                  <td className="px-3 py-2.5">
+                    <button
+                      onClick={() => copy(`${c.username}\t${c.password}`, c.username)}
+                      title="Copy username & password"
+                      className="rounded p-1.5 text-gray-400 hover:bg-purple-50 hover:text-purple-600"
+                    >
+                      {copied === c.username ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="border-t border-gray-100 px-5 py-3 text-right">
+          <button onClick={onClose} className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function EmployeesPage() {
@@ -373,16 +499,27 @@ export default function EmployeesPage() {
   const [showAdd,    setShowAdd]    = useState(false);
   const [editing,    setEditing]    = useState<Employee | null>(null);
   const [deleting,   setDeleting]   = useState<Employee | null>(null);
-  const [syncing,    setSyncing]    = useState(false);
+  const [togglingId,     setTogglingId]     = useState<string | null>(null);
+  const [trainingMap,    setTrainingMap]    = useState<Map<string, TrainingStatus>>(new Map());
   const [generating, setGenerating] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [generatedCreds, setGeneratedCreds] = useState<GeneratedCredential[] | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res  = await fetch('/api/employees?includeInactive=1&includeAssignments=1');
-      const json = await res.json();
-      setEmployees(json.employees || []);
+      const [empRes, trainingRes] = await Promise.all([
+        fetch('/api/employees?includeInactive=1&includeAssignments=1'),
+        fetch('/api/lms/admin/training-status'),
+      ]);
+      const empJson      = await empRes.json();
+      const trainingJson = await trainingRes.json();
+      setEmployees(empJson.employees || []);
+      const map = new Map<string, TrainingStatus>();
+      for (const r of (trainingJson.records ?? []) as TrainingStatus[]) {
+        map.set(r.employeeId, r);
+      }
+      setTrainingMap(map);
     } finally {
       setLoading(false);
     }
@@ -419,20 +556,6 @@ export default function EmployeesPage() {
     });
   }, [employees, activeDept, search]);
 
-  const handleSync = useCallback(async () => {
-    setSyncing(true);
-    setSyncResult(null);
-    try {
-      const res  = await fetch('/api/employees/sync-from-matrix', { method: 'POST' });
-      const json = await res.json();
-      if (!res.ok) { setSyncResult(`Error: ${json.error || 'Sync failed'}`); return; }
-      setSyncResult(`Synced ${json.upserted} employees from ${json.departments} department(s)`);
-      await load();
-    } finally {
-      setSyncing(false);
-    }
-  }, [load]);
-
   const handleGenerateLogins = useCallback(async () => {
     setGenerating(true);
     setSyncResult(null);
@@ -440,16 +563,34 @@ export default function EmployeesPage() {
       const res  = await fetch('/api/lms/admin/credentials/generate', { method: 'POST' });
       const json = await res.json();
       if (!res.ok) { setSyncResult(`Error: ${json.error || 'Failed to generate logins'}`); return; }
-      setSyncResult(
-        json.generated > 0
-          ? `Generated logins for ${json.generated} employee(s). Set passwords via Edit.`
-          : 'All employees already have a login username.',
-      );
+      if (json.generated > 0) {
+        setGeneratedCreds(json.credentials || []);
+        setSyncResult(`Generated logins for ${json.generated} employee(s).`);
+      } else {
+        setSyncResult('All employees already have a login and password.');
+      }
       await load();
     } finally {
       setGenerating(false);
     }
   }, [load]);
+
+  const toggleActive = async (emp: Employee) => {
+    setTogglingId(emp._id);
+    try {
+      const res  = await fetch(`/api/employees/${emp._id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: !emp.isActive }),
+      });
+      const json = await res.json();
+      if (json.employee) {
+        setEmployees((prev) => prev.map((e) => e._id === emp._id ? { ...e, isActive: json.employee.isActive } : e));
+      }
+    } finally {
+      setTogglingId(null);
+    }
+  };
 
   const handleSaved = (emp: Employee) => {
     setEmployees((prev) => {
@@ -484,18 +625,9 @@ export default function EmployeesPage() {
             </button>
             <button
               suppressHydrationWarning
-              onClick={handleSync}
-              disabled={syncing}
-              title="Import employees from uploaded training matrix files"
-              className="flex items-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-100 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} /> Sync from Matrix
-            </button>
-            <button
-              suppressHydrationWarning
               onClick={handleGenerateLogins}
               disabled={generating}
-              title="Create learning-module usernames for any employees that don't have one yet"
+              title="Create a First.Last username and an auto password for any employee that doesn't have a login yet"
               className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
             >
               <KeyRound className={`h-3.5 w-3.5 ${generating ? 'animate-pulse' : ''}`} /> Generate Logins
@@ -604,6 +736,7 @@ export default function EmployeesPage() {
                   <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Emp. ID</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Login</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Assigned SOPs</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Training</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                   <th className="px-4 py-3 w-20" />
                 </tr>
@@ -641,6 +774,33 @@ export default function EmployeesPage() {
                       <AssignmentBadge employeeName={emp.name} assignments={emp.assignments || []} />
                     </td>
                     <td className="px-4 py-3">
+                      {(() => {
+                        const t = trainingMap.get(emp._id);
+                        if (!t || t.totalSops === 0) return <span className="text-xs text-gray-300">—</span>;
+                        return (
+                          <div className="space-y-1 min-w-[120px]">
+                            <div className="flex items-center gap-1.5">
+                              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-100">
+                                <div
+                                  className={`h-full rounded-full ${t.status === 'completed' ? 'bg-green-500' : 'bg-purple-500'}`}
+                                  style={{ width: `${t.overallPct}%` }}
+                                />
+                              </div>
+                              <span className="text-xs font-semibold text-gray-600">{t.overallPct}%</span>
+                            </div>
+                            <p className="text-[11px] text-gray-400 leading-tight">
+                              {t.completedSops}/{t.totalSops} done
+                              {t.certCount > 0 && (
+                                <span className="ml-1 inline-flex items-center gap-0.5 text-amber-500 font-medium">
+                                  <Trophy className="h-2.5 w-2.5" />{t.certCount}
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                    <td className="px-4 py-3">
                       <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${emp.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400'}`}>
                         {emp.isActive ? 'Active' : 'Inactive'}
                       </span>
@@ -654,6 +814,17 @@ export default function EmployeesPage() {
                           title="Edit"
                         >
                           <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          suppressHydrationWarning
+                          onClick={() => toggleActive(emp)}
+                          disabled={togglingId === emp._id}
+                          className={`rounded p-1.5 text-gray-400 ${emp.isActive ? 'hover:bg-red-50 hover:text-red-600' : 'hover:bg-green-50 hover:text-green-600'}`}
+                          title={emp.isActive ? 'Mark as Left' : 'Reactivate'}
+                        >
+                          {togglingId === emp._id
+                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            : emp.isActive ? <UserX className="h-3.5 w-3.5" /> : <UserCheck className="h-3.5 w-3.5" />}
                         </button>
                         <button
                           suppressHydrationWarning
@@ -692,6 +863,12 @@ export default function EmployeesPage() {
           employee={deleting}
           onClose={() => setDeleting(null)}
           onDeleted={() => { setEmployees((p) => p.filter((e) => e._id !== deleting._id)); setDeleting(null); }}
+        />
+      )}
+      {generatedCreds && (
+        <CredentialsModal
+          credentials={generatedCreds}
+          onClose={() => setGeneratedCreds(null)}
         />
       )}
     </div>

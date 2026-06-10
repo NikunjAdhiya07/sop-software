@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { cookies } from 'next/headers';
 import { connectDB } from '@/lib/mongodb';
 import { createLmsToken, LMS_COOKIE } from '@/lib/lms-session';
+import { escapeRegex } from '@/lib/lms-credentials';
 import Employee from '@/models/Employee';
 
 export const runtime = 'nodejs';
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
 
     await connectDB();
     const employee = await Employee.findOne({
-      lmsUsername: String(username).toLowerCase().trim(),
+      lmsUsername: new RegExp(`^${escapeRegex(String(username).trim())}$`, 'i'),
     }).select('+lmsPasswordHash');
 
     // Uniform error so we don't reveal whether the username exists.

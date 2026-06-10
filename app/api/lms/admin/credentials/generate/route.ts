@@ -1,15 +1,19 @@
 import { NextResponse } from 'next/server';
+import bcrypt from 'bcryptjs';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { connectDB } from '@/lib/mongodb';
-import { generateUniqueLmsUsername } from '@/lib/lms-credentials';
+import { generateUniqueLmsUsername, generateAutoPassword } from '@/lib/lms-credentials';
 import Employee from '@/models/Employee';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // POST /api/lms/admin/credentials/generate
-// Backfill an lmsUsername for every employee that doesn't have one yet.
+// For every employee that has no learning-module password yet, generate a
+// username ("First.Last") and an auto password ("First@NNNN"), then return the
+// plaintext credentials. The password is stored only as a bcrypt hash, so this
+// response is the ONE time the admin can see/share it.
 export async function POST() {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
@@ -18,19 +22,27 @@ export async function POST() {
 
   try {
     await connectDB();
-    const missing = await Employee.find({
-      $or: [{ lmsUsername: { $exists: false } }, { lmsUsername: null }, { lmsUsername: '' }],
-    }).select('_id name');
+    const pending = await Employee.find({
+      $or: [{ lmsPasswordHash: { $exists: false } }, { lmsPasswordHash: null }, { lmsPasswordHash: '' }],
+    }).select('_id name lmsUsername');
 
-    let generated = 0;
-    for (const emp of missing) {
-      const username = await generateUniqueLmsUsername(emp.name, emp._id.toString());
+    const credentials: Array<{ name: string; username: string; password: string }> = [];
+
+    for (const emp of pending) {
+      const id = emp._id.toString();
+      // Give everyone the current "First.Last" handle; these accounts have no
+      // password yet, so they've never been used — safe to (re)assign.
+      const username = await generateUniqueLmsUsername(emp.name, id);
+      const password = generateAutoPassword(emp.name);
+
       emp.lmsUsername = username;
+      emp.lmsPasswordHash = await bcrypt.hash(password, 12);
       await emp.save();
-      generated += 1;
+
+      credentials.push({ name: emp.name, username, password });
     }
 
-    return NextResponse.json({ generated });
+    return NextResponse.json({ generated: credentials.length, credentials });
   } catch (err: unknown) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }

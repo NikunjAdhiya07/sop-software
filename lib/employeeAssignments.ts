@@ -33,8 +33,20 @@ function empKey(department: string, name: string): string {
   return `${department}||${name}`.trim().toLowerCase();
 }
 
-function assignmentKey(a: Pick<EmployeeSopAssignment, 'sopCode' | 'month' | 'year'>): string {
-  return `${a.sopCode}|${a.month}|${a.year}`;
+// Each SOP counts once per employee — the same SOP scheduled across several
+// months (or surfaced by both the records and the snapshot sources) must not
+// inflate the assigned-SOP count. Dedup on the SOP code alone.
+function assignmentKey(a: Pick<EmployeeSopAssignment, 'sopCode'>): string {
+  return String(a.sopCode || '').toUpperCase().trim();
+}
+
+// Earlier = smaller (year, month). Used to keep the first scheduled occurrence.
+function isEarlier(
+  a: Pick<EmployeeSopAssignment, 'month' | 'year'>,
+  b: Pick<EmployeeSopAssignment, 'month' | 'year'>,
+): boolean {
+  if (a.year !== b.year) return a.year < b.year;
+  return a.month < b.month;
 }
 
 function stripVersion(code: string): string {
@@ -81,20 +93,18 @@ async function buildSopNameMap(): Promise<Map<string, string>> {
 }
 
 export async function getEmployeeAssignmentsMap(): Promise<Map<string, EmployeeSopAssignment[]>> {
-  const map = new Map<string, EmployeeSopAssignment[]>();
-  const seen = new Map<string, Set<string>>();
+  // empKey → (sopCode → kept assignment). One entry per SOP per employee.
+  const byEmp = new Map<string, Map<string, EmployeeSopAssignment>>();
   const nameByBase = await buildSopNameMap();
 
   const add = (department: string, name: string, assignment: EmployeeSopAssignment) => {
     const key = empKey(department, name);
-    if (!map.has(key)) {
-      map.set(key, []);
-      seen.set(key, new Set());
-    }
+    if (!byEmp.has(key)) byEmp.set(key, new Map());
+    const bySop = byEmp.get(key)!;
     const dedupeKey = assignmentKey(assignment);
-    if (seen.get(key)!.has(dedupeKey)) return;
-    seen.get(key)!.add(dedupeKey);
-    map.get(key)!.push(assignment);
+    const existing = bySop.get(dedupeKey);
+    // Keep the earliest-scheduled occurrence of each SOP.
+    if (!existing || isEarlier(assignment, existing)) bySop.set(dedupeKey, assignment);
   };
 
   const records = await TrainingMatrixRecord.find({ status: { $ne: 'na' } })
@@ -184,6 +194,10 @@ export async function getEmployeeAssignmentsMap(): Promise<Map<string, EmployeeS
       }
     }
   }
+
+  // Materialize the deduped per-employee maps into the array shape callers expect.
+  const map = new Map<string, EmployeeSopAssignment[]>();
+  for (const [key, bySop] of byEmp) map.set(key, [...bySop.values()]);
 
   for (const list of map.values()) {
     // Fill in / improve display names from the SOP collection.

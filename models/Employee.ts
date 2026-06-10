@@ -21,7 +21,8 @@ const EmployeeSchema = new Schema<IEmployee>(
     department:  { type: String, required: true, trim: true, index: true },
     employeeId:  { type: String, trim: true },
     isActive:    { type: Boolean, default: true, index: true },
-    lmsUsername: { type: String, trim: true, lowercase: true, unique: true, sparse: true },
+    // Casing is preserved (e.g. "Abbas.Mehdi"); login matches case-insensitively.
+    lmsUsername: { type: String, trim: true, unique: true, sparse: true },
     // select:false keeps the hash out of every normal query result.
     lmsPasswordHash: { type: String, select: false },
   },
