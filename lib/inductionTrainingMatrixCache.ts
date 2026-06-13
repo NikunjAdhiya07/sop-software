@@ -2,20 +2,20 @@ import SystemCache from '@/models/SystemCache';
 
 // Bump the version suffix whenever the payload shape changes so stale snapshots
 // (memory or persisted) are ignored after a deploy.
-const CACHE_KEY = 'training-matrix-overview:v51';
+const CACHE_KEY = 'induction-training-matrix-overview:v1';
 
-export type TrainingMatrixCacheEntry = { computedAt: number; payload: unknown };
+export type InductionTrainingMatrixCacheEntry = { computedAt: number; payload: unknown };
 
 type MemoryCacheEntry = { key: string; computedAt: number; payload: unknown };
 
-function getMemoryEntry(): TrainingMatrixCacheEntry | null {
-  const store = (globalThis as { __tm_overview_cache?: MemoryCacheEntry }).__tm_overview_cache;
+function getMemoryEntry(): InductionTrainingMatrixCacheEntry | null {
+  const store = (globalThis as { __itm_overview_cache?: MemoryCacheEntry }).__itm_overview_cache;
   if (!store || store.key !== CACHE_KEY) return null;
   return { computedAt: store.computedAt, payload: store.payload };
 }
 
 function setMemoryEntry(payload: unknown, computedAt: number) {
-  (globalThis as { __tm_overview_cache?: MemoryCacheEntry }).__tm_overview_cache = {
+  (globalThis as { __itm_overview_cache?: MemoryCacheEntry }).__itm_overview_cache = {
     key: CACHE_KEY,
     computedAt,
     payload,
@@ -31,7 +31,7 @@ export function setMemoryCached(payload: unknown) {
  * the durable MongoDB snapshot. Reading the persisted snapshot requires an
  * active DB connection (callers connect before invoking this).
  */
-export async function getTrainingMatrixCacheEntry(): Promise<TrainingMatrixCacheEntry | null> {
+export async function getInductionTrainingMatrixCacheEntry(): Promise<InductionTrainingMatrixCacheEntry | null> {
   const mem = getMemoryEntry();
   if (mem) return mem;
 
@@ -49,12 +49,12 @@ export async function getTrainingMatrixCacheEntry(): Promise<TrainingMatrixCache
 }
 
 /** Backwards-compatible accessor used by other routes — returns just the payload. */
-export async function getTrainingMatrixCached(): Promise<unknown | null> {
-  const entry = await getTrainingMatrixCacheEntry();
+export async function getInductionTrainingMatrixCached(): Promise<unknown | null> {
+  const entry = await getInductionTrainingMatrixCacheEntry();
   return entry ? entry.payload : null;
 }
 
-export async function setTrainingMatrixCached(payload: unknown) {
+export async function setInductionTrainingMatrixCached(payload: unknown) {
   const computedAt = Date.now();
   setMemoryEntry(payload, computedAt);
   try {
@@ -68,9 +68,9 @@ export async function setTrainingMatrixCached(payload: unknown) {
   }
 }
 
-export async function invalidateTrainingMatrixCache() {
+export async function invalidateInductionTrainingMatrixCache() {
   // Clear the in-memory copy so we don't keep serving it as "fresh".
-  (globalThis as { __tm_overview_cache?: MemoryCacheEntry }).__tm_overview_cache = undefined;
+  (globalThis as { __itm_overview_cache?: MemoryCacheEntry }).__itm_overview_cache = undefined;
   try {
     // Mark the durable snapshot STALE (computedAt=0) rather than deleting it. The
     // next request then still serves this snapshot instantly and triggers a

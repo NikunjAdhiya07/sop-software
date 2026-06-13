@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/mongodb';
 import SOP from '@/models/SOP';
 import MCQBank from '@/models/MCQBank';
-import TrainingMatrixUpload from '@/models/TrainingMatrixUpload';
+import InductionTrainingMatrixUpload from '@/models/InductionTrainingMatrixUpload';
 import DepartmentTrainer from '@/models/DepartmentTrainer';
 import { groupSOPRecords, baseIdentifierFromIdentifier } from '@/lib/sop-utils';
 import { getServerGroupedCache, setServerGroupedCache, invalidateDashboardSopsCache } from '@/lib/cache';
-import { getTrainingMatrixCacheEntry, setTrainingMatrixCached } from '@/lib/trainingMatrixCache';
+import { getInductionTrainingMatrixCacheEntry, setInductionTrainingMatrixCached } from '@/lib/inductionTrainingMatrixCache';
 import { resolveEngGujFilePaths } from '@/lib/pathLanguageDetection';
 
 export const dynamic = 'force-dynamic';
@@ -186,7 +186,7 @@ async function revalidateOverviewInBackground() {
   overviewRevalidating = true;
   try {
     const payload = await computeOverviewPayload(false);
-    await setTrainingMatrixCached(payload);
+    await setInductionTrainingMatrixCached(payload);
   } catch (err) {
     console.error('[training-matrix/overview] background revalidate failed', err);
   } finally {
@@ -201,14 +201,14 @@ export async function GET(request: NextRequest) {
     // Explicit refresh: recompute synchronously from a fresh registry.
     if (forceFresh) {
       const payload = await computeOverviewPayload(true);
-      await setTrainingMatrixCached(payload);
+      await setInductionTrainingMatrixCached(payload);
       return NextResponse.json(payload);
     }
 
     // Connect first so the durable (Mongo) snapshot fallback is reachable.
     await connectDB();
 
-    const entry = await getTrainingMatrixCacheEntry();
+    const entry = await getInductionTrainingMatrixCacheEntry();
     if (entry) {
       // Serve immediately. If the snapshot is stale, refresh it in the
       // background so the *next* request is fresh — the user never waits.
@@ -221,7 +221,7 @@ export async function GET(request: NextRequest) {
 
     // Nothing cached anywhere (very first load or after invalidation): compute now.
     const payload = await computeOverviewPayload(false);
-    await setTrainingMatrixCached(payload);
+    await setInductionTrainingMatrixCached(payload);
     return NextResponse.json(payload);
   } catch (error) {
     return NextResponse.json(
@@ -243,7 +243,7 @@ async function computeOverviewPayload(forceFresh: boolean) {
     // durable snapshot, after which every load is instant.
     //   1. SOP registry (skipped if the shared grouped cache is already warm)
     //   2. MCQ stats from `mcqbanks` (one doc per SOP + language)
-    //   3. Trainers + training-matrix upload snapshots
+    //   3. Trainers + induction upload snapshots
     const cachedRegistry = getServerGroupedCache();
     const [sopRecords, mcqAgg, trainerDocs, uploads] = await Promise.all([
       cachedRegistry ? Promise.resolve(null) : SOP.find({}).select('-content').lean(),
@@ -267,7 +267,7 @@ async function computeOverviewPayload(forceFresh: boolean) {
         },
       ]),
       DepartmentTrainer.find({}).select('departmentName sopIdentifier trainerName').lean(),
-      TrainingMatrixUpload.find({ snapshot: { $exists: true, $ne: null } })
+      InductionTrainingMatrixUpload.find({ snapshot: { $exists: true, $ne: null } })
         .sort({ uploadedAt: -1 })
         .select('department uploadedAt fileUrl fileName snapshot')
         .lean(),
@@ -415,9 +415,9 @@ async function computeOverviewPayload(forceFresh: boolean) {
       };
     }
 
-    // 5b. Trainers (from `departmenttrainers`) and upload snapshots (from
-    //     `trainingmatricesupload`) — both fetched in the parallel batch above to
-    //     avoid extra sequential round-trips on a cold cluster.
+    // 5b. Trainers (from `departmenttrainers`) and induction upload snapshots
+    //     (from `inductiontrainingmatricesupload`) — both fetched in the parallel
+    //     batch above to avoid extra sequential round-trips on a cold cluster.
     // base SOP code → trainer names (SOP-specific), and dept → trainer names (dept-level).
     const sopTrainerMap = new Map<string, Set<string>>();
     const deptTrainerMap = new Map<string, Set<string>>();

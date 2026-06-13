@@ -10,6 +10,7 @@ export const config = {
   matcher: [
     "/dashboard/:path*",
     "/training-matrix/:path*",
+    "/induction-training-matrix/:path*",
     "/employees/:path*",
     "/compliance/:path*",
     "/sop-scheduler/:path*",

@@ -33,7 +33,11 @@ async function loadGroupedRegistry(): Promise<RegistrySOP[]> {
   if (cached) return cached;
 
   await connectDB();
-  const records = await SOP.find({}).sort({ updatedAt: -1 }).lean();
+  // Exclude the heavy `content` field (full extracted SOP text, ~30KB avg / up to
+  // 77KB per doc — ~56MB across the collection). Grouping never reads it, and on a
+  // free-tier (M0) cluster transferring the full collection gets throttled to
+  // minutes. Projecting it out drops the load to ~2s.
+  const records = await SOP.find({}).select('-content').sort({ updatedAt: -1 }).lean();
   const grouped = groupSOPRecords(records as never[]);
   setServerGroupedCache(grouped);
   return grouped;

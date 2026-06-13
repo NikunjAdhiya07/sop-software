@@ -2,7 +2,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 export type TrainingStatus = 'completed' | 'not_required' | 'na' | 'pending';
 
-export interface ITrainingMatrixRecord extends Document {
+export interface IInductionTrainingMatrixRecord extends Document {
   uploadId: mongoose.Types.ObjectId;
   department: string;
   employeeName: string;
@@ -21,8 +21,8 @@ export interface ITrainingMatrixRecord extends Document {
   updatedAt: Date;
 }
 
-const TrainingMatrixRecordSchema = new Schema<ITrainingMatrixRecord>({
-  uploadId:     { type: Schema.Types.ObjectId, ref: 'TrainingMatrixUpload', required: true, index: true },
+const InductionTrainingMatrixRecordSchema = new Schema<IInductionTrainingMatrixRecord>({
+  uploadId:     { type: Schema.Types.ObjectId, ref: 'InductionTrainingMatricesUpload', required: true, index: true },
   department:   { type: String, required: true, index: true },
   employeeName: { type: String, required: true, index: true },
   designation:  { type: String, default: '' },
@@ -38,11 +38,11 @@ const TrainingMatrixRecordSchema = new Schema<ITrainingMatrixRecord>({
   isAddendum:   { type: Boolean, default: false },
 }, { timestamps: true });
 
-TrainingMatrixRecordSchema.index({ department: 1, year: 1, month: 1 });
-TrainingMatrixRecordSchema.index({ year: 1, status: 1 });
-TrainingMatrixRecordSchema.index({ employeeName: 1, department: 1 });
-TrainingMatrixRecordSchema.index({ status: 1, sopCode: 1, department: 1, designation: 1, month: 1 });
-TrainingMatrixRecordSchema.index({ sourceFile: 1, sopCode: 1, department: 1, month: 1 });
+InductionTrainingMatrixRecordSchema.index({ department: 1, year: 1, month: 1 });
+InductionTrainingMatrixRecordSchema.index({ year: 1, status: 1 });
+InductionTrainingMatrixRecordSchema.index({ employeeName: 1, department: 1 });
+InductionTrainingMatrixRecordSchema.index({ status: 1, sopCode: 1, department: 1, designation: 1, month: 1 });
+InductionTrainingMatrixRecordSchema.index({ sourceFile: 1, sopCode: 1, department: 1, month: 1 });
 
-export default mongoose.models.TrainingMatricesRecord ||
-  mongoose.model<ITrainingMatrixRecord>('TrainingMatricesRecord', TrainingMatrixRecordSchema, 'trainingmatricesrecord');
+export default mongoose.models.InductionTrainingMatricesRecord ||
+  mongoose.model<IInductionTrainingMatrixRecord>('InductionTrainingMatricesRecord', InductionTrainingMatrixRecordSchema, 'inductiontrainingmatricesrecord');

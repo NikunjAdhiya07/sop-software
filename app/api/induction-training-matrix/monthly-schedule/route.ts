@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/mongodb';
-import TrainingMatrixUpload from '@/models/TrainingMatrixUpload';
-import TrainingMatrixRecord from '@/models/TrainingMatrixRecord';
+import InductionTrainingMatrixUpload from '@/models/InductionTrainingMatrixUpload';
+import InductionTrainingMatrixRecord from '@/models/InductionTrainingMatrixRecord';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +39,7 @@ type ScheduleAssignment = {
   year: number;
 };
 
-// GET /api/training-matrix/monthly-schedule?sopCode=QAGE01-10
+// GET /api/induction-training-matrix/monthly-schedule?sopCode=QAGE01-10
 //
 // Returns month-wise employee counts plus every (department, month) assignment
 // for the SOP — including multiple months per department when versioned Excel
@@ -56,11 +56,11 @@ export async function GET(req: NextRequest) {
     const sopCodePattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-\\d+)?$`, 'i');
 
     const [uploads, records] = await Promise.all([
-      TrainingMatrixUpload.find(
+      InductionTrainingMatrixUpload.find(
         { 'snapshot.sopMonthMap': { $exists: true } },
         { department: 1, year: 1, snapshot: 1 },
       ).lean(),
-      TrainingMatrixRecord.find({
+      InductionTrainingMatrixRecord.find({
         status: { $ne: 'na' },
         sopCode: sopCodePattern,
       })
