@@ -12,8 +12,10 @@ import {
   getTrainingMatrixCached as getTrainingMatrixOverviewCached,
   invalidateTrainingMatrixCache,
 } from "@/lib/trainingMatrixCache";
+import { invalidateInductionTrainingMatrixCache } from "@/lib/inductionTrainingMatrixCache";
 import {
-  getManageSopViewCached,
+  getManageSopViewCacheEntry,
+  getManageSopViewMemoryEntry,
   invalidateManageSopViewCache,
   runManageSopViewRebuildSingleflight,
   setManageSopViewCached,
@@ -67,6 +69,32 @@ function stripVersion(code: string): string {
     .toUpperCase()
     .replace(/-\d+$/, "")
     .trim();
+}
+
+function resolveActiveMatrixYear(
+  uploads: Array<{ year?: number }>,
+): number {
+  const fallback = new Date().getFullYear();
+  let max = fallback;
+  for (const up of uploads) {
+    const y = Number(up?.year);
+    if (Number.isInteger(y) && y >= 2000 && y <= fallback + 1) {
+      max = Math.max(max, y);
+    }
+  }
+  return max;
+}
+
+function buildRecordMatch(
+  yearAll: boolean,
+  year: number,
+  activeYear: number,
+): Record<string, unknown> {
+  const match: Record<string, unknown> = { status: { $ne: "na" } };
+  // year=all scopes to the active matrix year — scanning every historical row
+  // is too slow on remote MongoDB and is not what the live matrix UI reflects.
+  match.year = yearAll ? activeYear : year;
+  return match;
 }
 
 // Keep designation matching resilient across historical data formats:
@@ -155,6 +183,33 @@ export interface ManageSOPViewResponse {
 
 export const dynamic = "force-dynamic";
 
+// Snapshot is considered fresh for this long. Older-but-present snapshots are
+// still served instantly while a background recompute refreshes them (SWR), so
+// users never block on the heavy rebuild.
+const MANAGE_SOP_FRESH_TTL_MS = 10 * 60 * 1000;
+
+async function revalidateManageSopViewInBackground(
+  request: NextRequest,
+  ctx: {
+    cacheYear: number | "all";
+    search: string;
+    yearAll: boolean;
+    year: number;
+    reqStartMs: number;
+  },
+): Promise<void> {
+  try {
+    await runManageSopViewRebuildSingleflight(ctx.cacheYear, ctx.search, () =>
+      buildManageSopViewResponse(request, ctx),
+    );
+  } catch (err) {
+    console.error(
+      `${MANAGE_SOP_API_LOG} background revalidate FAILED year=${ctx.cacheYear} search="${ctx.search}"`,
+      err,
+    );
+  }
+}
+
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const reqStartMs = nowMs();
   try {
@@ -167,40 +222,46 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const year = yearAll ? 0 : parseInt(yearParam) || new Date().getFullYear();
     const search = searchParams.get("search")?.toLowerCase() || "";
     const cacheYear: number | "all" = yearAll ? "all" : year;
+    const ctx = { cacheYear, search, yearAll, year, reqStartMs };
 
-    if (!forceFresh) {
-      const cacheLookupStartMs = nowMs();
-      const cached = await getManageSopViewCached(cacheYear, search);
-      if (cached) {
-        console.info(
-          `${MANAGE_SOP_API_LOG} GET /api/training-matrix/manage-sop-view source=manage-sop cache=HIT year=${cacheYear} search="${search}" cacheLookupMs=${elapsedMs(cacheLookupStartMs)} totalMs=${elapsedMs(reqStartMs)}`,
-        );
-        return NextResponse.json(cached, { status: 200 });
-      }
+    // Explicit refresh: recompute synchronously (single-flight dedups concurrent).
+    if (forceFresh) {
+      const response = await runManageSopViewRebuildSingleflight(cacheYear, search, () =>
+        buildManageSopViewResponse(request, ctx),
+      );
+      return NextResponse.json(response, { status: 200 });
     }
 
-    const response = await runManageSopViewRebuildSingleflight(
-      cacheYear,
-      search,
-      async () => {
-        if (!forceFresh) {
-          const warm = await getManageSopViewCached(cacheYear, search);
-          if (warm) return warm;
-        }
-        return buildManageSopViewResponse(request, {
-          cacheYear,
-          search,
-          yearAll,
-          year,
-          recordMatch: (() => {
-            const m: Record<string, unknown> = { status: { $ne: "na" } };
-            if (!yearAll) m.year = year;
-            return m;
-          })(),
-          reqStartMs,
-        });
-      },
-    );
+    // Fast path: fresh memory hit, no DB round-trip.
+    const mem = getManageSopViewMemoryEntry(cacheYear, search);
+    if (mem && Date.now() - mem.computedAt <= MANAGE_SOP_FRESH_TTL_MS) {
+      console.info(
+        `${MANAGE_SOP_API_LOG} GET cache=HIT(mem,fresh) year=${cacheYear} search="${search}" totalMs=${elapsedMs(reqStartMs)}`,
+      );
+      return NextResponse.json(mem.payload, { status: 200 });
+    }
+
+    // Connect so the durable (Mongo) snapshot fallback is reachable.
+    await connectDB();
+    const entry = mem || (await getManageSopViewCacheEntry(cacheYear, search));
+    if (entry) {
+      // Serve immediately. If stale, refresh in the background — the user never waits.
+      const age = Date.now() - (entry.computedAt || 0);
+      if (age > MANAGE_SOP_FRESH_TTL_MS) {
+        void revalidateManageSopViewInBackground(request, ctx);
+      }
+      console.info(
+        `${MANAGE_SOP_API_LOG} GET cache=HIT(${age > MANAGE_SOP_FRESH_TTL_MS ? "stale,revalidating" : "fresh"}) year=${cacheYear} search="${search}" totalMs=${elapsedMs(reqStartMs)}`,
+      );
+      return NextResponse.json(entry.payload, { status: 200 });
+    }
+
+    // Nothing cached anywhere: compute now (single-flight dedups concurrent cold loads).
+    const response = await runManageSopViewRebuildSingleflight(cacheYear, search, async () => {
+      const warm = await getManageSopViewCacheEntry(cacheYear, search);
+      if (warm) return warm.payload;
+      return buildManageSopViewResponse(request, ctx);
+    });
 
     return NextResponse.json(response, { status: 200 });
   } catch (error) {
@@ -222,23 +283,21 @@ async function buildManageSopViewResponse(
     search: string;
     yearAll: boolean;
     year: number;
-    recordMatch: Record<string, unknown>;
     reqStartMs: number;
   },
 ): Promise<ManageSOPViewResponse> {
-    const { cacheYear, search, yearAll, year, recordMatch, reqStartMs } = ctx;
+    const { cacheYear, search, yearAll, year, reqStartMs } = ctx;
     const dbConnectStartMs = nowMs();
     await connectDB();
     const dbConnectMs = elapsedMs(dbConnectStartMs);
 
     const dataFetchStartMs = nowMs();
-    // Parallel queries - fetch from training matrix data + cached payloads + fallback name sources
+    // Light queries first — derive the active matrix year, then scope the heavy
+    // TrainingMatrixRecord aggregation to that year only (year=all is not a
+    // full-history scan; it matches the current upload snapshot year).
     const [
       assignments,
-      trainingAgg,
-      manualRecords,
       employees,
-      groupedRegistryRows,
       scheduleUploads,
       dashboardCached,
       overviewCached,
@@ -246,6 +305,23 @@ async function buildManageSopViewResponse(
       MatrixSOPAssignment.find({ isActive: true })
         .select("sopCode sopName department designationApplicability")
         .lean(),
+      Employee.find({ isActive: true })
+        .select("department designation name")
+        .lean(),
+      TrainingMatrixUpload.find({ "snapshot.sopMonthMap": { $exists: true } })
+        .select("department snapshot.sopMonthMap uploadedAt year")
+        .sort({ uploadedAt: -1 })
+        .lean(),
+      getDashboardSopsCache(),
+      getTrainingMatrixOverviewCached(),
+    ]);
+
+    const activeYear = resolveActiveMatrixYear(
+      scheduleUploads as Array<{ year?: number }>,
+    );
+    const recordMatch = buildRecordMatch(yearAll, year, activeYear);
+
+    const [trainingAgg, manualRecords] = await Promise.all([
       TrainingMatrixRecord.aggregate([
         { $match: recordMatch },
         {
@@ -260,28 +336,12 @@ async function buildManageSopViewResponse(
           },
         },
       ]),
-      // Only records inserted by the Manage SOP page's Update action — used to
-      // reconstruct exactly which (sopCode, dept, month) cells the user allocated
-      // (plus which designations) so the UI highlight survives a refresh without
-      // flagging unrelated historical training records.
       TrainingMatrixRecord.find({
         ...recordMatch,
         sourceFile: "manage-sop-manual",
       })
         .select("sopCode department month designation")
         .lean(),
-      Employee.find({ isActive: true })
-        .select("department designation name")
-        .lean(),
-      getGroupedRegistryRows(),
-      // Department-level schedule snapshots — source of truth for which SOPs run in
-      // which month. Sort by latest upload so the most recent schedule wins per dept.
-      TrainingMatrixUpload.find({ "snapshot.sopMonthMap": { $exists: true } })
-        .select("department snapshot.sopMonthMap uploadedAt year")
-        .sort({ uploadedAt: -1 })
-        .lean(),
-      getDashboardSopsCache(),
-      getTrainingMatrixOverviewCached(),
     ]);
     const dataFetchMs = elapsedMs(dataFetchStartMs);
 
@@ -350,6 +410,26 @@ async function buildManageSopViewResponse(
       registryRows = [];
     }
 
+    let groupedRegistryRows: Awaited<ReturnType<typeof getGroupedRegistryRows>> =
+      [];
+    if (registryRows.length === 0) {
+      groupedRegistryRows = await getGroupedRegistryRows();
+    }
+
+    // Hydrate overview once up-front (needed for dbSop universe + unassigned counts).
+    let overviewData: any = overviewCached;
+    if (!overviewData?.totalCard?.dbSopsByDept) {
+      try {
+        const overviewRes = await fetch(
+          `${request.nextUrl.origin}/api/training-matrix/overview`,
+          { cache: "no-store" },
+        );
+        if (overviewRes.ok) overviewData = await overviewRes.json();
+      } catch {
+        // Non-fatal; fallbacks below still apply.
+      }
+    }
+
     // Canonical SOP universe — same family-unique filter the Training Matrix
     // overview applies to get `dbSopCount`. Without this, codes that exist only
     // in TrainingMatrixRecord / MatrixSOPAssignment / snapshots / SOPLibrary /
@@ -369,13 +449,18 @@ async function buildManageSopViewResponse(
 
     // Exact DB SOP universe from Training Matrix overview (dbSopCount, e.g. 427).
     const overviewDbSopCodes = new Map<string, string>();
-    const populateOverviewDbSopCodes = (
-      dbSopsByDept?:
-        | Record<string, Array<{ sopCode?: string; title?: string }>>
-        | null,
-    ): void => {
-      if (!dbSopsByDept) return;
-      for (const list of Object.values(dbSopsByDept)) {
+    const overviewByDept = (
+      overviewData as {
+        totalCard?: {
+          dbSopsByDept?: Record<
+            string,
+            Array<{ sopCode?: string; title?: string }>
+          >;
+        };
+      } | null
+    )?.totalCard?.dbSopsByDept;
+    if (overviewByDept) {
+      for (const list of Object.values(overviewByDept)) {
         if (!Array.isArray(list)) continue;
         for (const item of list) {
           const base = stripVersion(String(item?.sopCode || ""));
@@ -383,51 +468,6 @@ async function buildManageSopViewResponse(
           overviewDbSopCodes.set(base, String(item?.title || "").trim());
         }
       }
-    };
-
-    // Resolve the Training Matrix overview payload. BOTH the row universe
-    // (canonicalEntries below) and the Total card (dbSopCount) must come from THIS
-    // payload's dbSop universe. Otherwise, when the overview cache is cold, the rows
-    // fall back to the larger dashboard-registry / training-record set while the Total
-    // card uses the overview's dbSopCount — and the two disagree (e.g. 428 rows vs 418
-    // total). So we hydrate it HERE, before building the rows, rather than later.
-    let overviewData: any = overviewCached || null;
-    populateOverviewDbSopCodes(
-      (
-        overviewCached as {
-          totalCard?: {
-            dbSopsByDept?: Record<
-              string,
-              Array<{ sopCode?: string; title?: string }>
-            >;
-          };
-        } | null
-      )?.totalCard?.dbSopsByDept,
-    );
-    if (overviewDbSopCodes.size === 0) {
-      if (!overviewData) {
-        try {
-          const overviewRes = await fetch(
-            `${request.nextUrl.origin}/api/training-matrix/overview`,
-            { cache: "no-store" },
-          );
-          if (overviewRes.ok) overviewData = await overviewRes.json();
-        } catch {
-          // Non-fatal — rows fall back to canonicalRows / sopSet below.
-        }
-      }
-      populateOverviewDbSopCodes(
-        (
-          overviewData as {
-            totalCard?: {
-              dbSopsByDept?: Record<
-                string,
-                Array<{ sopCode?: string; title?: string }>
-              >;
-            };
-          } | null
-        )?.totalCard?.dbSopsByDept,
-      );
     }
 
     // Build designation set per department AND count employees per dept per designation,
@@ -871,16 +911,6 @@ async function buildManageSopViewResponse(
       };
     });
 
-    // Pull the SAME numbers the main training-matrix page displays — no second
-    // implementation of the math here. `overviewRes` already contains:
-    //   • perDept[d].excelDeptSplit.missingByDept  → red counts shown on each dept card
-    //   • perDept[d].excelDeptSplit.unknownMissing → unknown-owner red counts
-    //   • perDept[d].missingFromExcelList         → the actual codes those reds represent
-    // The Manage SOP page just mirrors these.
-    // overviewData (and the overviewDbSopCodes universe derived from it) was already
-    // resolved above — before the rows were built — so the row count and the Total
-    // card stay aligned. Nothing more to hydrate here.
-
     const overviewDbSopCount = (
       overviewData as { totalCard?: { dbSopCount?: number } } | null
     )?.totalCard?.dbSopCount;
@@ -896,25 +926,25 @@ async function buildManageSopViewResponse(
     const unassignedSopCodes = new Set<string>();
     try {
       const overviewJson = (overviewData || null) as {
-        perDept?: Record<string, any>;
+        totalCard?: {
+          missingFromExcelList?: Array<{ sopCode?: string }>;
+          missingSopCount?: number;
+        };
       } | null;
-      const perDept = overviewJson?.perDept || {};
-      for (const dept of Object.keys(perDept)) {
-        const pd = perDept[dept];
-        if (!pd?.uploaded) continue;
-        const split = pd.excelDeptSplit || {};
-        const missingByDept = split.missingByDept || {};
-        for (const v of Object.values(missingByDept))
-          overviewUnassignedCount += Number(v) || 0;
-        overviewUnassignedCount += Number(split.unknownMissing) || 0;
-        const list = Array.isArray(pd.missingFromExcelList)
-          ? pd.missingFromExcelList
-          : [];
-        for (const item of list) {
-          const code = stripVersion(String(item?.sopCode || "")).toUpperCase();
-          if (code) unassignedSopCodes.add(code);
-        }
+      // Unassigned = DB SOPs absent from EVERY Excel upload (global), exactly the
+      // set the main Training Matrix "Unassigned / Missing" red count uses. Summing
+      // each dept's own-Excel misses double-counts SOPs assigned in another dept's
+      // Excel, which inflated this number (e.g. 43 instead of 9).
+      const totalCard = overviewJson?.totalCard;
+      const globalMissingList = Array.isArray(totalCard?.missingFromExcelList)
+        ? totalCard!.missingFromExcelList!
+        : [];
+      for (const item of globalMissingList) {
+        const code = stripVersion(String(item?.sopCode || "")).toUpperCase();
+        if (code) unassignedSopCodes.add(code);
       }
+      overviewUnassignedCount =
+        Number(totalCard?.missingSopCount) || globalMissingList.length;
     } catch {
       // Overview unavailable — fall back to 0 rather than diverging numbers.
       overviewUnassignedCount = 0;
@@ -1358,6 +1388,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     try {
       await Promise.all([
         invalidateTrainingMatrixCache(),
+        invalidateInductionTrainingMatrixCache(),
         invalidateManageSopViewCache(),
       ]);
     } catch {

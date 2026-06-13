@@ -14,6 +14,7 @@ import React, {
 } from 'react';
 import { Search, Download, ArrowLeft, Filter, ScrollText, Users, Tag } from 'lucide-react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { useAuthGuard } from '@/hooks/useAuthGuard';
 
@@ -135,11 +136,23 @@ interface ManageSOPViewResponse {
   year: number | 'all';
 }
 
-const MANAGE_SOP_VIEW_LOCAL_CACHE_KEY = 'manage_sop_view_cache_v3';
-// Initial guess only — the real estimate is measured from rendered rows at runtime
-// (see rowHeightEstimate) because row heights vary with view mode and content.
-const ESTIMATED_ROW_HEIGHT = 176;
-const ROW_OVERSCAN = 6;
+const MANAGE_SOP_VIEW_LOCAL_CACHE_KEY = 'manage_sop_view_cache_v5';
+const ESTIMATED_ROW_HEIGHT = 132;
+const ESTIMATED_ROW_HEIGHT_EMPLOYEE = 160;
+const EMPLOYEE_DISPLAY_COLUMNS = 3;
+const ROW_OVERSCAN = 3;
+const ROW_OVERSCAN_EMPLOYEE = 1;
+
+function chunkIntoColumns<T>(items: T[], columnCount: number): T[][] {
+  if (items.length === 0) return Array.from({ length: columnCount }, () => []);
+  const perColumn = Math.ceil(items.length / columnCount);
+  return Array.from({ length: columnCount }, (_, i) =>
+    items.slice(i * perColumn, (i + 1) * perColumn),
+  );
+}
+
+const desigKeyHelper = (dept: string, abbr: string) => `${dept}|${abbr}`;
+const cellInnerKeyHelper = (dept: string, month: number) => `${dept}|${month}`;
 
 function readManageSopLocalCache(): ManageSOPViewResponse | null {
   try {
@@ -212,18 +225,17 @@ const GrandTotalText = memo(function GrandTotalText() {
 
 export default function ManageSOPDashboard() {
   useAuthGuard();
+  const searchParams = useSearchParams();
+  const backHref = searchParams.get('returnTo') === 'induction'
+    ? '/induction-training-matrix'
+    : '/training-matrix';
 
-  // Start with null/loading=true (matches SSR output) then hydrate from localStorage
-  // on the client in the effect below. Initializing from localStorage inside useState
-  // causes a hydration mismatch because the server always sees window=undefined (null)
-  // while the client may find cached data — the two renders produce different HTML.
-  const [viewData, setViewData] = useState<ManageSOPViewResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Synchronous first paint from localStorage (hard refresh feels instant).
+  const [viewData, setViewData] = useState<ManageSOPViewResponse | null>(() => readManageSopLocalCache());
+  const [loading, setLoading] = useState(() => readManageSopLocalCache() === null);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
-  // Department filter — '' = all departments, otherwise only SOPs that belong to the
-  // selected department are shown.
-  const [deptFilter, setDeptFilter] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('sr');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   // Card filter — drives which SOPs the table shows when the user clicks a stat card.
@@ -693,13 +705,12 @@ export default function ManageSOPDashboard() {
         text: `Updated training records: ${data.inserted || 0} added${data.removed ? `, ${data.removed} removed` : ''}${data.unchanged ? `; ${data.unchanged} already existed` : ''}.`,
       });
 
-      // The main Training Matrix page caches its overview payload in
-      // localStorage for 5 minutes (key 'training_matrix_overview_cache_v3').
-      // Without dropping it here, navigating back to the Training Matrix would
-      // show the pre-Update counts (e.g. 702 / 43) until that TTL expires.
+      // Both matrix pages cache overview payloads in localStorage for 5 minutes.
+      // Clear both so navigating back to either shows fresh counts after Update.
       try {
         if (typeof window !== 'undefined') {
-          localStorage.removeItem('training_matrix_overview_cache_v3');
+          localStorage.removeItem('training_matrix_overview_cache_v5');
+          localStorage.removeItem('induction_training_matrix_overview_cache_v5');
         }
       } catch { /* storage unavailable — non-fatal */ }
 
@@ -765,18 +776,13 @@ export default function ManageSOPDashboard() {
   };
 
   useEffect(() => {
-    // Hydrate from localStorage first so the page feels instant — this runs only on
-    // the client, after hydration, so it can't cause a server/client HTML mismatch.
-    const cached = readManageSopLocalCache();
-    if (cached) {
-      setViewData(cached);
-      setLoading(false);
-    }
-
+    const controller = new AbortController();
     const fetchData = async (refresh = false) => {
       try {
+        if (!viewData) setLoading(true);
+        else setRefreshing(true);
         const url = `/api/training-matrix/manage-sop-view?year=all${refresh ? '&refresh=1' : ''}`;
-        const res = await fetch(url, { cache: 'no-store' });
+        const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
         if (!res.ok) throw new Error('Failed to fetch');
         const data: ManageSOPViewResponse = await res.json();
         setViewData(data);
@@ -789,16 +795,20 @@ export default function ManageSOPDashboard() {
         }
         setError('');
       } catch (err) {
-        if (!cached) {
+        if (controller.signal.aborted) return;
+        if (!viewData) {
           setError(err instanceof Error ? err.message : 'Unknown error');
         }
         console.error(err);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     };
-    // Prefer server memory cache on load; hard refresh only after explicit Update.
     void fetchData(false);
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -839,19 +849,6 @@ export default function ManageSOPDashboard() {
       return resolved;
     };
 
-    const departmentsList = viewData.departments || [];
-    const deptsToSearch = deptFilter ? [deptFilter] : departmentsList;
-    const employeesByDept = viewData.employeesByDept || EMPTY_EMP_BY_DEPT;
-
-    // "Belongs to" a department when the SOP is scheduled / assigned / has training
-    // records there, or the dept is its registry primary. Mirrors countsForDept, which
-    // is declared later in the component, so we inline the predicate to stay in-scope.
-    const belongsToDept = (sop: ManageSOPViewResponse['sops'][0], dept: string): boolean => {
-      const ds = sop.deptStats.find(s => s.department === dept);
-      if (ds?.isScheduled || ds?.isAssigned || (ds?.total || 0) > 0) return true;
-      return sop.primaryDepartment === dept;
-    };
-
     const base = viewData.sops.filter(sop => {
       const code = (sop.sopCode || '').trim();
       const name = (sop.sopName || '').trim();
@@ -863,36 +860,48 @@ export default function ManageSOPDashboard() {
       if (cardFilter === 'unassigned' && !unassignedSet.has(code.toUpperCase())) return false;
       if (cardFilter === 'assigned' && unassignedSet.has(code.toUpperCase())) return false;
 
-      // Department filter — show only SOPs that belong to the selected department.
-      if (deptFilter && !belongsToDept(sop, deptFilter)) return false;
-
       if (q) {
-        // 1) Direct SOP code / name match.
-        if (code.toLowerCase().includes(q) || name.toLowerCase().includes(q)) return true;
+        const textMatch =
+          code.toLowerCase().includes(q) || name.toLowerCase().includes(q);
+        if (textMatch) return true;
 
-        // 2) Employee-name match. An SOP is "related to" an employee when that
-        // employee's designation is assigned/trained for this SOP in the employee's
-        // department. This intentionally does NOT require a month to be selected, so a
-        // plain name search like "Baldev" surfaces every SOP that person is responsible
-        // for — not just ones already allocated.
+        // Employee-name search should match only when that employee is actually
+        // allocated (training checked + at least one selected month in that dept).
+        const sopOverrides = overrides[sop.sopCode] || EMPTY_INNER;
+        const sopMonth = monthCells[sop.sopCode] || EMPTY_INNER;
+        const sopManual = viewData.manualAllocations?.[sop.sopCode.toUpperCase()] || EMPTY_MANUAL;
         const sopManualDesigs =
-          viewData.manualDesignations?.[code.toUpperCase()] || EMPTY_MANUAL_DESIG;
+          viewData.manualDesignations?.[sop.sopCode.toUpperCase()] || EMPTY_MANUAL_DESIG;
+        const employeesByDept = viewData.employeesByDept || EMPTY_EMP_BY_DEPT;
 
-        for (const dept of deptsToSearch) {
-          const emps = employeesByDept[dept];
-          if (!emps || emps.length === 0) continue;
-          const nameMatches = emps.filter(emp => norm(emp.name).includes(q));
-          if (nameMatches.length === 0) continue;
-
+        for (const dept of viewData.departments || []) {
           const deptStat = sop.deptStats.find(s => s.department === dept);
-          const assignedDesigs = new Set<string>();
-          for (const d of deptStat?.designations || []) {
-            if (d.isAssigned || (d.count || 0) > 0) assignedDesigs.add(norm(d.designation));
+          const manualMonths = sopManual[dept] || [];
+          let hasSelectedMonth = false;
+          for (let m = 1; m <= 12; m++) {
+            const key = cellInnerKey(dept, m);
+            const persisted = manualMonths.includes(m) || deptStat?.scheduledMonth === m;
+            const selected = key in sopMonth ? !!sopMonth[key] : persisted;
+            if (selected) { hasSelectedMonth = true; break; }
           }
-          for (const d of sopManualDesigs[dept] || []) assignedDesigs.add(norm(d));
-          if (assignedDesigs.size === 0) continue;
+          if (!hasSelectedMonth) continue;
 
-          if (nameMatches.some(emp => assignedDesigs.has(norm(emp.designation)))) return true;
+          const selectedDesigs = new Set(
+            allDesignationsRef.current.filter((fullName) => {
+              const key = desigKey(dept, fullName);
+              if (key in sopOverrides) return !!sopOverrides[key];
+              return (deptStat?.designations || []).some(
+                (d) => d.designation === fullName && (d.isAssigned || (d.count || 0) > 0),
+              ) || (sopManualDesigs[dept] || []).some((d) => d === fullName);
+            }).map(norm),
+          );
+
+          if (selectedDesigs.size === 0) continue;
+          const emps = employeesByDept[dept] || [];
+          const hasEmpMatch = emps.some((emp) =>
+            norm(emp.name).includes(q) && selectedDesigs.has(norm(emp.designation)),
+          );
+          if (hasEmpMatch) return true;
         }
         return false;
       }
@@ -922,27 +931,10 @@ export default function ManageSOPDashboard() {
           va = (a.sopName || '').toLowerCase();
           vb = (b.sopName || '').toLowerCase();
           break;
-        case 'dept': {
-          // Use canonical department order (same as server-side SR sort) so clicking
-          // DEPT shows QA → QC → Microbiology → Production → Store → Engineering →
-          // Personnel instead of alphabetical order. SOPs with no resolved primary
-          // department are ranked last so all known-dept SOPs appear first.
-          const DEPT_RANK: Record<string, number> = {
-            QA: 0, QC: 1, Microbiology: 2, Production: 3,
-            Store: 4, Engineering: 5, Personnel: 6,
-          };
-          const da = primaryDeptForSort(a);
-          const db = primaryDeptForSort(b);
-          const ra = da ? (DEPT_RANK[da] ?? 7) : 8;
-          const rb = db ? (DEPT_RANK[db] ?? 7) : 8;
-          if (ra !== rb) return sortDir === 'asc' ? ra - rb : rb - ra;
-          // Tie-break within the same department: sort by sopCode
-          const ca = (a.sopCode || '').toLowerCase();
-          const cb = (b.sopCode || '').toLowerCase();
-          if (ca < cb) return sortDir === 'asc' ? -1 : 1;
-          if (ca > cb) return sortDir === 'asc' ? 1 : -1;
-          return 0;
-        }
+        case 'dept':
+          va = primaryDeptForSort(a).toLowerCase();
+          vb = primaryDeptForSort(b).toLowerCase();
+          break;
         case 'designation':
           va = designationCount(a);
           vb = designationCount(b);
@@ -962,10 +954,7 @@ export default function ManageSOPDashboard() {
     };
 
     return sortKey === 'sr' ? base : [...base].sort(cmp);
-    // Search now derives employee matches from persisted assignment data (viewData),
-    // not the live `overrides` / `monthCells` edit state — so typing in the search box
-    // (or ticking checkboxes) no longer forces a full re-filter + re-window of the list.
-  }, [viewData, deferredSearch, deptFilter, sortKey, sortDir, cardFilter, unassignedSet, EMPTY_MANUAL_DESIG, EMPTY_EMP_BY_DEPT]);
+  }, [viewData, deferredSearch, sortKey, sortDir, cardFilter, unassignedSet, overrides, monthCells, EMPTY_INNER, EMPTY_MANUAL, EMPTY_MANUAL_DESIG, EMPTY_EMP_BY_DEPT]);
 
   // Per-SOP per-dept "counts toward this department" predicate.
   // True if the SOP is scheduled for the dept, OR assigned to the dept, OR if the dept
@@ -1060,7 +1049,7 @@ export default function ManageSOPDashboard() {
 
   // Primary department: prefer the API-provided value (sourced from MasterSOPRepository /
   // SOPLibrary), then fall back to dept with most assigned designations.
-  const getPrimaryDept = (sop: ManageSOPViewResponse['sops'][0]): string => {
+  const getPrimaryDept = useCallback((sop: ManageSOPViewResponse['sops'][0]): string => {
     if (sop.primaryDepartment) return sop.primaryDepartment;
     let best = '';
     let bestScore = -1;
@@ -1072,7 +1061,7 @@ export default function ManageSOPDashboard() {
       }
     }
     return bestScore > 0 ? best : '';
-  };
+  }, []);
 
 
   const collectDesignations = (
@@ -1305,81 +1294,17 @@ export default function ManageSOPDashboard() {
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const proxyScrollRef = useRef<HTMLDivElement>(null);
   const [scrollWidth, setScrollWidth] = useState(0);
-  const [tableScrollTop, setTableScrollTop] = useState(0);
-  const [tableViewportHeight, setTableViewportHeight] = useState(720);
-  // Measured average row height — keeps the virtualizer's spacer padding accurate so
-  // the scrollbar geometry matches reality and the view doesn't jump while scrolling.
-  const [rowHeightEstimate, setRowHeightEstimate] = useState(ESTIMATED_ROW_HEIGHT);
   const syncing = useRef<'main' | 'proxy' | null>(null);
-  const scrollRafRef = useRef<number | null>(null);
-
-  const windowedRange = useMemo(() => {
-    const total = filteredSops.length;
-    if (total === 0) return { start: 0, end: 0, topPad: 0, bottomPad: 0 };
-    const start = Math.max(0, Math.floor(tableScrollTop / rowHeightEstimate) - ROW_OVERSCAN);
-    const visibleCount = Math.ceil(tableViewportHeight / rowHeightEstimate) + ROW_OVERSCAN * 2;
-    const end = Math.min(total, start + visibleCount);
-    return {
-      start,
-      end,
-      topPad: start * rowHeightEstimate,
-      bottomPad: Math.max(0, (total - end) * rowHeightEstimate),
-    };
-  }, [filteredSops.length, tableScrollTop, tableViewportHeight, rowHeightEstimate]);
-
-  const windowedSops = useMemo(
-    () => filteredSops.slice(windowedRange.start, windowedRange.end),
-    [filteredSops, windowedRange.start, windowedRange.end],
-  );
 
   useLayoutEffect(() => {
     const el = tableScrollRef.current;
     if (!el) return;
-    const update = () => {
-      setScrollWidth(el.scrollWidth);
-      setTableViewportHeight(el.clientHeight);
-      setTableScrollTop(el.scrollTop);
-    };
-    update();
-    const ro = new ResizeObserver(update);
+    const updateWidth = () => setScrollWidth(el.scrollWidth);
+    updateWidth();
+    const ro = new ResizeObserver(updateWidth);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [viewData, filteredSops.length]);
-
-  // Measure rendered rows and feed the average height back into the virtualizer. Row
-  // heights vary widely (employee view, wrapped SOP names, 7-department stacks), so a
-  // fixed estimate makes the top/bottom spacers wrong and the scroll position drift.
-  //
-  // IMPORTANT: this must NOT re-run as a consequence of rowHeightEstimate changing,
-  // or it feeds back on itself (estimate → window slice → measured average → estimate)
-  // and never converges ("Maximum update depth exceeded"). So we deliberately key it
-  // only on inputs that are independent of the estimate — view mode, result-set size,
-  // and viewport height — and read the current window via the ref instead of deps.
-  useLayoutEffect(() => {
-    const el = tableScrollRef.current;
-    if (!el) return;
-    const rows = el.querySelectorAll('tr[data-sop-row="1"]');
-    let sum = 0;
-    let count = 0;
-    rows.forEach((r) => {
-      const h = (r as HTMLElement).offsetHeight;
-      if (h > 0) { sum += h; count += 1; }
-    });
-    if (count === 0) return;
-    const avg = sum / count;
-    // Only commit meaningfully different averages so this can't loop on sub-pixel noise.
-    setRowHeightEstimate(prev => (Math.abs(prev - avg) > 4 ? avg : prev));
-  }, [viewMode, filteredSops.length, tableViewportHeight]);
-
-  // Land on the first matching row whenever the result set changes (search / filters /
-  // sort), instead of keeping a stale — and now meaningless — scroll offset.
-  // useLayoutEffect (not useEffect) so the DOM scroll resets before the browser paints —
-  // otherwise the virtualizer renders one frame with the old scroll position, which
-  // shows only the 1–2 rows that happened to be visible at the bottom of the list.
-  useLayoutEffect(() => {
-    if (tableScrollRef.current) tableScrollRef.current.scrollTop = 0;
-    setTableScrollTop(0);
-  }, [deferredSearch, deptFilter, cardFilter, sortKey, sortDir]);
+  }, [viewData, sortKey, sortDir, search, filteredSops.length, viewMode]);
 
   const mirrorScroll = (source: 'main' | 'proxy', from: HTMLDivElement | null) => {
     if (!from) return;
@@ -1391,14 +1316,6 @@ export default function ManageSOPDashboard() {
   const onMainScroll = () => {
     if (syncing.current && syncing.current !== 'main') { syncing.current = null; return; }
     mirrorScroll('main', tableScrollRef.current);
-    // Coalesce vertical-scroll updates to one per animation frame. The windowing math
-    // keys off tableScrollTop, so updating it on every raw scroll event caused a
-    // re-render storm and the laggy scrolling users reported.
-    if (scrollRafRef.current != null) return;
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = null;
-      if (tableScrollRef.current) setTableScrollTop(tableScrollRef.current.scrollTop);
-    });
   };
   const onProxyScroll = () => {
     if (syncing.current && syncing.current !== 'proxy') { syncing.current = null; return; }
@@ -1440,10 +1357,13 @@ export default function ManageSOPDashboard() {
           {/* Title and Back Button */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-4">
-              <Link href="/training-matrix" className="text-blue-600 hover:text-blue-700">
+              <Link href={backHref} className="text-blue-600 hover:text-blue-700">
                 <ArrowLeft size={20} />
               </Link>
               <h1 className="text-2xl font-bold text-gray-900">Manage SOP Training Data</h1>
+              {refreshing && (
+                <span className="text-xs font-medium text-blue-600 animate-pulse">Updating…</span>
+              )}
             </div>
           </div>
 
@@ -1487,30 +1407,15 @@ export default function ManageSOPDashboard() {
               <Search className="absolute left-3 top-2.5 text-gray-400 w-5 h-5" />
               <input
                 type="text"
-                placeholder="Search SOP No, Name or Employee..."
+                placeholder="Search SOP No or Name..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            <div className="relative">
-              <Filter className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-              <select
-                value={deptFilter}
-                onChange={(e) => setDeptFilter(e.target.value)}
-                className={`pl-8 pr-3 py-2 border rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  deptFilter ? 'border-blue-500 text-blue-700 font-medium' : 'border-gray-300 text-gray-700'
-                }`}
-                title="Filter SOPs by department"
-              >
-                <option value="">All Departments</option>
-                {departments.map((dept) => (
-                  <option key={`deptopt-${dept}`} value={dept}>
-                    {DEPT_ABBR[dept] || dept}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <button className="p-2 border border-gray-300 rounded hover:bg-gray-50 text-gray-600">
+              <Filter className="w-4 h-4" />
+            </button>
             <button
               onClick={applyChanges}
               disabled={applying}
@@ -1542,22 +1447,8 @@ export default function ManageSOPDashboard() {
               <Download className="w-4 h-4" />
               Export
             </button>
-            <div className="flex items-center gap-2">
-              <div className={`text-sm font-medium ${filteredSops.length < (viewData?.sops?.length ?? 0) ? 'text-amber-600' : 'text-gray-600'}`}>
-                {filteredSops.length} SOPs
-                {filteredSops.length < (viewData?.sops?.length ?? 0) && (
-                  <span className="ml-1 text-xs text-amber-500">(filtered)</span>
-                )}
-              </div>
-              {(cardFilter !== 'all' || deptFilter || search) && (
-                <button
-                  type="button"
-                  onClick={() => { setCardFilter('all'); setDeptFilter(''); setSearch(''); }}
-                  className="text-xs text-blue-600 hover:text-blue-800 underline"
-                >
-                  Clear filters
-                </button>
-              )}
+            <div className="text-sm text-gray-600">
+              {filteredSops.length} SOPs
             </div>
           </div>
 
@@ -1598,7 +1489,7 @@ export default function ManageSOPDashboard() {
       <div
         ref={tableScrollRef}
         onScroll={onMainScroll}
-        className="flex-1 overflow-auto overscroll-contain"
+        className="flex-1 overflow-auto overscroll-contain [overflow-anchor:none]"
         style={{ paddingBottom: 48 }}
       >
         <div className="inline-block min-w-full p-6">
@@ -1610,7 +1501,7 @@ export default function ManageSOPDashboard() {
                   <SortableTh label="SOP NO" sortKey="sopCode" current={sortKey} dir={sortDir} onClick={toggleSort} className="w-24 px-3 text-left border-l border-gray-200" />
                   <SortableTh label="SOP NAME" sortKey="sopName" current={sortKey} dir={sortDir} onClick={toggleSort} className="w-56 px-3 text-left border-l border-gray-200" />
                   <SortableTh label="DEPT" sortKey="dept" current={sortKey} dir={sortDir} onClick={toggleSort} className="w-16 px-2 text-left border-l border-gray-200" />
-                  <th className="py-3 font-semibold bg-gray-100 text-gray-900 px-3 text-left border-l border-gray-200 whitespace-nowrap">
+                  <th className={`py-3 font-semibold bg-gray-100 text-gray-900 px-3 text-left border-l border-gray-200 whitespace-nowrap ${viewMode === 'employee' ? 'min-w-[420px]' : ''}`}>
                     <div>{viewMode === 'employee' ? 'DEPARTMENT WITH EMPLOYEES' : 'DEPARTMENT WITH DESIGNATION'}</div>
                     <div className="mt-0.5 text-[10px] font-normal text-gray-600 flex items-center gap-2">
                       <span className="inline-flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm border border-blue-500 bg-white" />Training Check</span>
@@ -1624,62 +1515,33 @@ export default function ManageSOPDashboard() {
               </thead>
 
               <CountsContext.Provider value={countsAPI}>
-              <tbody>
-                {filteredSops.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
-                      No training data found
-                    </td>
-                  </tr>
-                ) : (
-                  <>
-                    {windowedRange.topPad > 0 && (
-                      <tr aria-hidden="true" style={{ height: windowedRange.topPad }}>
-                        <td colSpan={6} className="p-0 border-0" />
-                      </tr>
-                    )}
-                    {windowedSops.map((sop, localIdx) => {
-                      const idx = windowedRange.start + localIdx;
-                      return (
-                    <SopRow
-                      key={`sop-${sop.sopCode}`}
-                      sop={sop}
-                      idx={idx}
-                      isUnassigned={unassignedSet.has(String(sop.sopCode || '').toUpperCase())}
-                      departments={departments}
-                      designationsByDept={viewData.designationsByDept || {}}
-                      allDesignations={allDesignationsRef.current}
-                      primaryDept={getPrimaryDept(sop)}
-                      sopOverrides={overrides[sop.sopCode] || EMPTY_INNER}
-                      sopInductionOverrides={inductionOverrides[sop.sopCode] || EMPTY_INNER}
-                      sopMonthCells={monthCells[sop.sopCode] || EMPTY_INNER}
-                      sopManualAllocations={
-                        viewData.manualAllocations?.[sop.sopCode.toUpperCase()] || EMPTY_MANUAL
-                      }
-                      sopManualDesignations={
-                        viewData.manualDesignations?.[sop.sopCode.toUpperCase()] || EMPTY_MANUAL_DESIG
-                      }
-                      viewMode={viewMode}
-                      employeesByDept={viewData.employeesByDept || EMPTY_EMP_BY_DEPT}
-                      onEmployeeClick={openEmployeeModal}
-                      onOpenAddEmployee={openAddEmployeeModal}
-                      setDesigChecked={setDesigChecked}
-                      setInductionChecked={setInductionChecked}
-                      setDeptChecked={setDeptChecked}
-                      setDeptInductionChecked={setDeptInductionChecked}
-                      toggleMonthCell={toggleMonthCell}
-                      openCountPopup={stableOpenCountPopup}
-                    />
-                      );
-                    })}
-                    {windowedRange.bottomPad > 0 && (
-                      <tr aria-hidden="true" style={{ height: windowedRange.bottomPad }}>
-                        <td colSpan={6} className="p-0 border-0" />
-                      </tr>
-                    )}
-                  </>
-                )}
-              </tbody>
+              <VirtualizedSopRows
+                scrollRef={tableScrollRef}
+                filteredSops={filteredSops}
+                viewMode={viewMode}
+                unassignedSet={unassignedSet}
+                departments={departments}
+                designationsByDept={viewData.designationsByDept || {}}
+                allDesignations={allDesignationsRef.current}
+                overrides={overrides}
+                inductionOverrides={inductionOverrides}
+                monthCells={monthCells}
+                manualAllocations={viewData.manualAllocations}
+                manualDesignations={viewData.manualDesignations}
+                employeesByDept={viewData.employeesByDept || EMPTY_EMP_BY_DEPT}
+                emptyInner={EMPTY_INNER}
+                emptyManual={EMPTY_MANUAL}
+                emptyManualDesig={EMPTY_MANUAL_DESIG}
+                getPrimaryDept={getPrimaryDept}
+                onEmployeeClick={openEmployeeModal}
+                onOpenAddEmployee={openAddEmployeeModal}
+                setDesigChecked={setDesigChecked}
+                setInductionChecked={setInductionChecked}
+                setDeptChecked={setDeptChecked}
+                setDeptInductionChecked={setDeptInductionChecked}
+                toggleMonthCell={toggleMonthCell}
+                openCountPopup={stableOpenCountPopup}
+              />
               </CountsContext.Provider>
             </table>
           </div>
@@ -2235,6 +2097,213 @@ export default function ManageSOPDashboard() {
   );
 }
 
+// ─── VirtualizedSopRows ───────────────────────────────────────────────────────
+// Scroll-driven windowing lives here so vertical scroll does not re-render the
+// full dashboard (header, modals, stats cards, etc.).
+interface VirtualizedSopRowsProps {
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  filteredSops: ManageSOPViewResponse['sops'];
+  viewMode: 'designation' | 'employee';
+  unassignedSet: Set<string>;
+  departments: string[];
+  designationsByDept: Record<string, string[]>;
+  allDesignations: string[];
+  overrides: Record<string, Record<string, boolean>>;
+  inductionOverrides: Record<string, Record<string, boolean>>;
+  monthCells: Record<string, Record<string, boolean>>;
+  manualAllocations?: ManageSOPViewResponse['manualAllocations'];
+  manualDesignations?: ManageSOPViewResponse['manualDesignations'];
+  employeesByDept: Record<string, Array<{ name: string; designation: string }>>;
+  emptyInner: Record<string, boolean>;
+  emptyManual: Record<string, number[]>;
+  emptyManualDesig: Record<string, string[]>;
+  getPrimaryDept: (sop: ManageSOPViewResponse['sops'][0]) => string;
+  onEmployeeClick: (name: string, dept: string, designation: string) => void;
+  onOpenAddEmployee: (sopCode: string, sopName: string, dept: string) => void;
+  setDesigChecked: (sopCode: string, dept: string, fullName: string, value: boolean) => void;
+  setInductionChecked: (sopCode: string, dept: string, fullName: string, value: boolean) => void;
+  setDeptChecked: (sopCode: string, dept: string, value: boolean) => void;
+  setDeptInductionChecked: (sopCode: string, dept: string, value: boolean) => void;
+  toggleMonthCell: (sopCode: string, dept: string, month: number, value: boolean) => void;
+  openCountPopup: (e: React.MouseEvent, scope: CountScope) => void;
+}
+
+const VirtualizedSopRows = memo(function VirtualizedSopRows({
+  scrollRef,
+  filteredSops,
+  viewMode,
+  unassignedSet,
+  departments,
+  designationsByDept,
+  allDesignations,
+  overrides,
+  inductionOverrides,
+  monthCells,
+  manualAllocations,
+  manualDesignations,
+  employeesByDept,
+  emptyInner,
+  emptyManual,
+  emptyManualDesig,
+  getPrimaryDept,
+  onEmployeeClick,
+  onOpenAddEmployee,
+  setDesigChecked,
+  setInductionChecked,
+  setDeptChecked,
+  setDeptInductionChecked,
+  toggleMonthCell,
+  openCountPopup,
+}: VirtualizedSopRowsProps) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(720);
+  const scrollRafRef = useRef<number | null>(null);
+  const pendingScrollTopRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const syncViewport = () => setViewportHeight(el.clientHeight);
+    syncViewport();
+    setScrollTop(el.scrollTop);
+
+    const onScroll = () => {
+      pendingScrollTopRef.current = el.scrollTop;
+      if (scrollRafRef.current !== null) return;
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        setScrollTop(pendingScrollTopRef.current);
+      });
+    };
+
+    el.addEventListener('scroll', onScroll, { passive: true });
+    const ro = new ResizeObserver(syncViewport);
+    ro.observe(el);
+
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      ro.disconnect();
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, [scrollRef, filteredSops.length, viewMode]);
+
+  const windowedRange = useMemo(() => {
+    const total = filteredSops.length;
+    if (total === 0) return { start: 0, end: 0, topPad: 0, bottomPad: 0 };
+    const rowHeight = viewMode === 'employee' ? ESTIMATED_ROW_HEIGHT_EMPLOYEE : ESTIMATED_ROW_HEIGHT;
+    const overscan = viewMode === 'employee' ? ROW_OVERSCAN_EMPLOYEE : ROW_OVERSCAN;
+    const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+    const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2;
+    const end = Math.min(total, start + visibleCount);
+    return {
+      start,
+      end,
+      topPad: start * rowHeight,
+      bottomPad: Math.max(0, (total - end) * rowHeight),
+    };
+  }, [filteredSops.length, scrollTop, viewportHeight, viewMode]);
+
+  const windowedSops = useMemo(
+    () => filteredSops.slice(windowedRange.start, windowedRange.end),
+    [filteredSops, windowedRange.start, windowedRange.end],
+  );
+
+  if (filteredSops.length === 0) {
+    return (
+      <tbody>
+        <tr>
+          <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
+            No training data found
+          </td>
+        </tr>
+      </tbody>
+    );
+  }
+
+  return (
+    <tbody>
+      {windowedRange.topPad > 0 && (
+        <tr aria-hidden="true" style={{ height: windowedRange.topPad }}>
+          <td colSpan={6} className="p-0 border-0" />
+        </tr>
+      )}
+      {windowedSops.map((sop, localIdx) => {
+        const idx = windowedRange.start + localIdx;
+        const sopCodeUpper = String(sop.sopCode || '').toUpperCase();
+        return (
+          <SopRow
+            key={`sop-${sop.sopCode}`}
+            sop={sop}
+            idx={idx}
+            isUnassigned={unassignedSet.has(sopCodeUpper)}
+            departments={departments}
+            designationsByDept={designationsByDept}
+            allDesignations={allDesignations}
+            primaryDept={getPrimaryDept(sop)}
+            sopOverrides={overrides[sop.sopCode] || emptyInner}
+            sopInductionOverrides={inductionOverrides[sop.sopCode] || emptyInner}
+            sopMonthCells={monthCells[sop.sopCode] || emptyInner}
+            sopManualAllocations={manualAllocations?.[sopCodeUpper] || emptyManual}
+            sopManualDesignations={manualDesignations?.[sopCodeUpper] || emptyManualDesig}
+            viewMode={viewMode}
+            employeesByDept={employeesByDept}
+            onEmployeeClick={onEmployeeClick}
+            onOpenAddEmployee={onOpenAddEmployee}
+            setDesigChecked={setDesigChecked}
+            setInductionChecked={setInductionChecked}
+            setDeptChecked={setDeptChecked}
+            setDeptInductionChecked={setDeptInductionChecked}
+            toggleMonthCell={toggleMonthCell}
+            openCountPopup={openCountPopup}
+          />
+        );
+      })}
+      {windowedRange.bottomPad > 0 && (
+        <tr aria-hidden="true" style={{ height: windowedRange.bottomPad }}>
+          <td colSpan={6} className="p-0 border-0" />
+        </tr>
+      )}
+    </tbody>
+  );
+});
+
+function deptHasEmployeeViewActivity(
+  dept: string,
+  sop: ManageSOPViewResponse['sops'][0],
+  allDesignations: string[],
+  sopOverrides: Record<string, boolean>,
+  sopInductionOverrides: Record<string, boolean>,
+  sopMonthCells: Record<string, boolean>,
+  sopManualAllocations: Record<string, number[]>,
+  sopManualDesignations: Record<string, string[]>,
+): boolean {
+  const deptStat = sop.deptStats.find((s) => s.department === dept);
+  const manualDesigList = sopManualDesignations[dept] || [];
+  const manualMonths = sopManualAllocations[dept] || [];
+
+  for (let m = 1; m <= 12; m++) {
+    const key = cellInnerKeyHelper(dept, m);
+    const persisted = manualMonths.includes(m) || deptStat?.scheduledMonth === m;
+    const selected = key in sopMonthCells ? !!sopMonthCells[key] : persisted;
+    if (selected) return true;
+  }
+
+  return allDesignations.some((fullName) => {
+    const key = desigKeyHelper(dept, fullName);
+    if (key in sopOverrides) return !!sopOverrides[key];
+    if (key in sopInductionOverrides) return !!sopInductionOverrides[key];
+    return (
+      (deptStat?.designations || []).some(
+        (d) => d.designation === fullName && (d.isAssigned || (d.count || 0) > 0),
+      ) || manualDesigList.includes(fullName)
+    );
+  });
+}
+
 // ─── SopRow ──────────────────────────────────────────────────────────────────
 // Memoized row. Re-renders ONLY when its per-SOP state slices change. Live
 // counts come through CountsContext, so changing a global count re-renders
@@ -2265,9 +2334,6 @@ interface SopRowProps {
   openCountPopup: (e: React.MouseEvent, scope: CountScope) => void;
 }
 
-const desigKeyHelper = (dept: string, abbr: string) => `${dept}|${abbr}`;
-const cellInnerKeyHelper = (dept: string, month: number) => `${dept}|${month}`;
-
 const SopRow = memo(function SopRow({
   sop,
   idx,
@@ -2296,10 +2362,40 @@ const SopRow = memo(function SopRow({
   const rowBg = isUnassigned ? 'bg-red-50' : 'bg-green-50';
   const rowHover = isUnassigned ? 'hover:bg-red-100' : 'hover:bg-green-100';
 
+  const visibleDepartments = useMemo(() => {
+    if (viewMode !== 'employee') return departments;
+    return departments.filter((dept) =>
+      deptHasEmployeeViewActivity(
+        dept,
+        sop,
+        allDesignations,
+        sopOverrides,
+        sopInductionOverrides,
+        sopMonthCells,
+        sopManualAllocations,
+        sopManualDesignations,
+      ),
+    );
+  }, [
+    viewMode,
+    departments,
+    sop,
+    allDesignations,
+    sopOverrides,
+    sopInductionOverrides,
+    sopMonthCells,
+    sopManualAllocations,
+    sopManualDesignations,
+  ]);
+
   return (
     <tr
-      data-sop-row="1"
       className={`border-b border-gray-200 ${rowHover} align-top`}
+      style={{
+        contentVisibility: 'auto',
+        contain: 'layout style paint',
+        containIntrinsicSize: `auto ${viewMode === 'employee' ? ESTIMATED_ROW_HEIGHT_EMPLOYEE : ESTIMATED_ROW_HEIGHT}px`,
+      }}
     >
       {/* SR NO */}
       <td className={`w-10 px-2 py-3 text-center font-medium text-gray-900 ${rowBg} align-top`}>
@@ -2339,9 +2435,9 @@ const SopRow = memo(function SopRow({
       </td>
 
       {/* DEPARTMENT WITH DESIGNATION */}
-      <td className={`px-3 py-3 ${rowBg} border-l border-gray-200 align-top`}>
+      <td className={`px-3 py-3 ${rowBg} border-l border-gray-200 align-top ${viewMode === 'employee' ? 'min-w-[420px]' : ''}`}>
         <div className="flex flex-col gap-1.5">
-          {departments.map(dept => {
+          {visibleDepartments.map(dept => {
             const deptStat = sop.deptStats.find(s => s.department === dept);
             const manualDesigList = sopManualDesignations[dept] || [];
 
@@ -2374,7 +2470,7 @@ const SopRow = memo(function SopRow({
             const someIndChecked = indCheckedCount > 0 && !allIndChecked;
 
             return (
-              <div key={`dwd-${sop.sopCode}-${dept}`} className="flex flex-row items-center gap-3 leading-tight">
+              <div key={`dwd-${sop.sopCode}-${dept}`} className={`flex flex-row gap-3 leading-tight ${viewMode === 'employee' ? 'items-start' : 'items-center'}`}>
                 <div className="inline-flex items-center gap-1 w-16 shrink-0">
                   <label className="inline-flex items-center cursor-pointer" title={`Toggle all TRAINING designations under ${DEPT_ABBR[dept]}`}>
                     <TriStateCheckbox
@@ -2438,8 +2534,8 @@ const SopRow = memo(function SopRow({
                     ))}
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-1">
-                    <div className="flex flex-row flex-wrap items-center gap-x-3 gap-y-1">
+                  <div className="flex flex-col gap-1 flex-1 min-w-0">
+                    <div className="flex-1 min-w-0">
                       {(() => {
                         const norm = (v: unknown) => String(v || '').trim().toLowerCase();
                         const byDesignation = new Map(
@@ -2469,61 +2565,62 @@ const SopRow = memo(function SopRow({
                           );
                         }
 
-                        const MAX_VISIBLE = 8;
-                        const visible = selectedEmployees.slice(0, MAX_VISIBLE);
+                        const employeeColumns = chunkIntoColumns(selectedEmployees, EMPLOYEE_DISPLAY_COLUMNS);
                         return (
-                          <>
-                            {visible.map((emp, empIdx) => {
-                              const matched = byDesignation.get(norm(emp.designation));
-                              const trainingChecked = !!matched?.trainingChecked;
-                              const inductionChecked = !!matched?.inductionChecked;
-                              const fullName = matched?.fullName || emp.designation;
-                              return (
-                                <div
-                                  key={`emp-${sop.sopCode}-${dept}-${emp.name}-${empIdx}`}
-                                  className="inline-flex items-center gap-1"
-                                  title={`${emp.name} (${emp.designation}) — left: Training Check · right: Induction Training`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={trainingChecked}
-                                    onChange={(ev) => {
-                                      ev.stopPropagation();
-                                      setDesigChecked(sop.sopCode, dept, fullName, ev.target.checked);
-                                    }}
-                                    className="w-3 h-3 cursor-pointer"
-                                    aria-label={`Training: ${emp.name}`}
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={(ev) => {
-                                      ev.stopPropagation();
-                                      onEmployeeClick(emp.name, dept, emp.designation);
-                                    }}
-                                    className="font-medium text-[11px] text-blue-700 hover:underline cursor-pointer"
-                                    title={`${emp.name} (${emp.designation})`}
-                                  >
-                                    {emp.name}
-                                  </button>
-                                  <input
-                                    type="checkbox"
-                                    checked={inductionChecked}
-                                    onChange={(ev) => {
-                                      ev.stopPropagation();
-                                      setInductionChecked(sop.sopCode, dept, fullName, ev.target.checked);
-                                    }}
-                                    className="w-3 h-3 cursor-pointer accent-orange-500"
-                                    aria-label={`Induction: ${emp.name}`}
-                                  />
-                                </div>
-                              );
-                            })}
-                            {selectedEmployees.length > MAX_VISIBLE ? (
-                              <span className="text-[11px] text-gray-500">
-                                +{selectedEmployees.length - MAX_VISIBLE} more
-                              </span>
-                            ) : null}
-                          </>
+                          <div className="grid grid-cols-3 gap-x-4 gap-y-1 items-start flex-1 min-w-0">
+                            {employeeColumns.map((colEmps, colIdx) => (
+                              <div
+                                key={`emp-col-${sop.sopCode}-${dept}-${colIdx}`}
+                                className="flex flex-col gap-y-0.5 min-w-0"
+                              >
+                                {colEmps.map((emp, empIdx) => {
+                                  const matched = byDesignation.get(norm(emp.designation));
+                                  const trainingChecked = !!matched?.trainingChecked;
+                                  const inductionChecked = !!matched?.inductionChecked;
+                                  const fullName = matched?.fullName || emp.designation;
+                                  return (
+                                    <div
+                                      key={`emp-${sop.sopCode}-${dept}-${emp.name}-${colIdx}-${empIdx}`}
+                                      className="inline-flex items-center gap-1 whitespace-nowrap"
+                                      title={`${emp.name} (${emp.designation}) — left: Training Check · right: Induction Training`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={trainingChecked}
+                                        onChange={(ev) => {
+                                          ev.stopPropagation();
+                                          setDesigChecked(sop.sopCode, dept, fullName, ev.target.checked);
+                                        }}
+                                        className="w-3 h-3 cursor-pointer shrink-0"
+                                        aria-label={`Training: ${emp.name}`}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={(ev) => {
+                                          ev.stopPropagation();
+                                          onEmployeeClick(emp.name, dept, emp.designation);
+                                        }}
+                                        className="font-medium text-[11px] text-blue-700 hover:underline cursor-pointer truncate"
+                                        title={`${emp.name} (${emp.designation})`}
+                                      >
+                                        {emp.name}
+                                      </button>
+                                      <input
+                                        type="checkbox"
+                                        checked={inductionChecked}
+                                        onChange={(ev) => {
+                                          ev.stopPropagation();
+                                          setInductionChecked(sop.sopCode, dept, fullName, ev.target.checked);
+                                        }}
+                                        className="w-3 h-3 cursor-pointer accent-orange-500 shrink-0"
+                                        aria-label={`Induction: ${emp.name}`}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ))}
+                          </div>
                         );
                       })()}
                     </div>
