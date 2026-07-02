@@ -6,7 +6,10 @@ import FindingCard from './components/FindingCard';
 import { GuidelineSelector } from './components/GuidelineSelector';
 import { getScoreColorClass } from '@/lib/complianceFormatter';
 import { useComplianceRunStore, complianceRunProgressPct } from '@/lib/store/compliance-run-store';
-import { BookOpen, FileText, Layers, CheckCircle, Copy, X, Upload, Sparkles, Cpu, Bot, CheckSquare, Square } from 'lucide-react';
+import { BookOpen, FileText, Layers, CheckCircle, Copy, X, Upload, Sparkles, Cpu, Bot, CheckSquare, Square, ScrollText } from 'lucide-react';
+import dynamic from 'next/dynamic';
+
+const FinalSopModal = dynamic(() => import('@/components/compliance/FinalSopModal'), { ssr: false });
 
 interface Guideline {
   _id: string;
@@ -586,6 +589,7 @@ export default function ComplianceEnginePage() {
 
   const [selectedFindingIds, setSelectedFindingIds] = useState<Set<number>>(new Set());
   const [showConsolidatedSummary, setShowConsolidatedSummary] = useState(false);
+  const [finalSopOpen, setFinalSopOpen] = useState(false);
   const [isSummaryFullScreen, setIsSummaryFullScreen] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [applicableFindings, setApplicableFindings] = useState<Set<string>>(new Set());
@@ -2613,6 +2617,36 @@ export default function ComplianceEnginePage() {
                             <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">{selectedFindingIds.size}</span>
                           )}
                         </button>
+
+                        {/* View Final SOP with all fixes */}
+                        {(() => {
+                          const actionableFixes = (selectedReport?.findings ?? []).filter(
+                            (f) =>
+                              (f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant') &&
+                              (f.suggestedText || f.suggestedAction) &&
+                              f.sopTextSnippet?.trim(),
+                          );
+                          return (
+                            <button
+                              onClick={() => setFinalSopOpen(true)}
+                              disabled={actionableFixes.length === 0}
+                              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                                actionableFixes.length > 0
+                                  ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-200'
+                                  : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                              }`}
+                              title="Preview all proposed changes and export the final corrected SOP"
+                            >
+                              <ScrollText className="h-3.5 w-3.5" />
+                              View Final SOP
+                              {actionableFixes.length > 0 && (
+                                <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">
+                                  {actionableFixes.length} fix{actionableFixes.length !== 1 ? 'es' : ''}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })()}
                       </div>
                     </div>
 
@@ -2632,6 +2666,7 @@ export default function ComplianceEnginePage() {
                           >
                             <FindingCard
                               finding={f}
+                              sopId={selectedReport.sopId ?? sops.find(s => s.identifier === selectedReport.sopIdentifier)?._id}
                               reportContext={{
                                 sopIdentifier: selectedReport.sopIdentifier,
                                 sopName: selectedReport.sopName,
@@ -2774,6 +2809,35 @@ export default function ComplianceEnginePage() {
           </div>
         </div>
       )}
+
+      {/* Final SOP Modal — aggregates all actionable fixes */}
+      {finalSopOpen && selectedReport && (() => {
+        const resolvedSopId = selectedReport.sopId ?? sops.find(s => s.identifier === selectedReport.sopIdentifier)?._id ?? undefined;
+        const finalSopFixes = (selectedReport.findings ?? [])
+          .filter(f =>
+            (f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant') &&
+            f.sopTextSnippet?.trim() &&
+            (f.suggestedText?.trim() || f.suggestedAction?.trim()),
+          )
+          .map(f => ({
+            originalText: f.sopTextSnippet!,
+            replacementText: f.suggestedText?.trim() || f.suggestedAction!,
+            section: f.sopSectionAffected ?? '',
+            clauseNumber: f.clauseNumber ?? '',
+            clauseTitle: f.clauseTitle ?? '',
+          }));
+        return (
+          <FinalSopModal
+            isOpen={finalSopOpen}
+            onClose={() => setFinalSopOpen(false)}
+            sopId={resolvedSopId}
+            sopIdentifier={selectedReport.sopIdentifier}
+            sopName={selectedReport.sopName}
+            department={selectedReport.department}
+            fixes={finalSopFixes}
+          />
+        );
+      })()}
     </div>
   );
 }

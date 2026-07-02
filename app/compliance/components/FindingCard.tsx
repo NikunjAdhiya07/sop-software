@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
+const SopDraftModal = dynamic(() => import('@/components/compliance/SopDraftModal'), { ssr: false });
 import {
   ChevronDown,
   ChevronUp,
@@ -16,6 +18,10 @@ import {
   Search,
   XCircle,
   MapPin,
+  FileSearch,
+  Pencil,
+  Check,
+  X as XIcon,
 } from 'lucide-react';
 import {
   formatConfidence,
@@ -219,6 +225,7 @@ function scopeOwnerLabel(owner?: string): string {
 
 export default function FindingCard({
   finding,
+  sopId,
   reportContext,
   index,
   isSelected,
@@ -236,6 +243,9 @@ export default function FindingCard({
 
   const [expanded, setExpanded] = useState(defaultExpanded || isActionable);
   const [copied, setCopied] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [rewriting, setRewriting] = useState(false);
+  const [rewriteText, setRewriteText] = useState('');
 
   const levelBadge = getComplianceLevelBadge(finding.complianceLevel);
   const severityBadge = getSeverityBadge(finding.issueSeverity ?? 'informational');
@@ -646,40 +656,117 @@ export default function FindingCard({
                 <p className="text-sm font-semibold text-gray-900 leading-relaxed mb-3">
                   {finding.suggestedAction}
                 </p>
-                {proposedVerbiage && (
-                  <div className="rounded-lg border border-emerald-300 bg-white p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-[10px] font-black text-emerald-700 uppercase tracking-widest">
-                        Proposed Verbiage
-                      </p>
-                      <div className="flex items-center gap-2">
-                        {onApplyFix && finding.gapId && !finding.resolved && (
-                          <button
-                            type="button"
-                            disabled={applyingFix}
-                            onClick={() => onApplyFix(finding.gapId!, finding)}
-                            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-black uppercase tracking-wide bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                          >
-                            {applyingFix ? 'Applying…' : 'Apply Fix'}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={handleCopyVerbiage}
-                          className="flex items-center gap-1 text-[10px] font-black text-emerald-700 hover:text-emerald-900 uppercase tracking-wide"
-                        >
-                          {copied ? <CheckCircle className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                          Copy
-                        </button>
+                {proposedVerbiage && (() => {
+                  const activeVerbiage = rewriting ? rewriteText : (finding as any).__rewrittenVerbiage ?? proposedVerbiage;
+                  return (
+                    <div className="rounded-lg border border-emerald-300 bg-white p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-[10px] font-black text-emerald-700 uppercase tracking-widest">
+                          Proposed Verbiage
+                        </p>
+                        <div className="flex items-center gap-2">
+                          {rewriting ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  (finding as any).__rewrittenVerbiage = rewriteText;
+                                  setRewriting(false);
+                                }}
+                                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-black uppercase tracking-wide bg-emerald-600 text-white hover:bg-emerald-700"
+                              >
+                                <Check className="h-3 w-3" />
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRewriting(false)}
+                                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-black uppercase tracking-wide bg-gray-200 text-gray-700 hover:bg-gray-300"
+                              >
+                                <XIcon className="h-3 w-3" />
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRewriteText((finding as any).__rewrittenVerbiage ?? proposedVerbiage);
+                                  setRewriting(true);
+                                }}
+                                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-black uppercase tracking-wide bg-amber-500 text-white hover:bg-amber-600"
+                              >
+                                <Pencil className="h-3 w-3" />
+                                Rewrite
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!sopId || !sopSnippet}
+                                onClick={() => setDraftOpen(true)}
+                                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-black uppercase tracking-wide bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                              >
+                                <FileSearch className="h-3 w-3" />
+                                Preview Doc
+                              </button>
+                              {onApplyFix && finding.gapId && !finding.resolved && (
+                                <button
+                                  type="button"
+                                  disabled={applyingFix}
+                                  onClick={() => onApplyFix(finding.gapId!, finding)}
+                                  className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-black uppercase tracking-wide bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                                >
+                                  {applyingFix ? 'Applying…' : 'Apply Fix'}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={handleCopyVerbiage}
+                                className="flex items-center gap-1 text-[10px] font-black text-emerald-700 hover:text-emerald-900 uppercase tracking-wide"
+                              >
+                                {copied ? <CheckCircle className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                                Copy
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
+
+                      {rewriting ? (
+                        <textarea
+                          autoFocus
+                          value={rewriteText}
+                          onChange={(e) => setRewriteText(e.target.value)}
+                          rows={6}
+                          className="w-full text-sm text-gray-800 leading-relaxed border border-emerald-300 rounded-lg p-3 resize-y focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-emerald-50/40"
+                          placeholder="Rewrite the proposed verbiage…"
+                        />
+                      ) : (
+                        <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
+                          {activeVerbiage}
+                          {(finding as any).__rewrittenVerbiage && (finding as any).__rewrittenVerbiage !== proposedVerbiage && (
+                            <span className="ml-2 text-[10px] text-amber-600 font-bold">(edited)</span>
+                          )}
+                        </p>
+                      )}
                     </div>
-                    <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
-                      {proposedVerbiage}
-                    </p>
-                  </div>
-                )}
+                  );
+                })()}
               </section>
             )}
+
+            {/* DOCX draft preview modal — uses rewritten verbiage if edited */}
+            <SopDraftModal
+              isOpen={draftOpen}
+              onClose={() => setDraftOpen(false)}
+              sopId={sopId}
+              sopIdentifier={reportContext?.sopIdentifier}
+              sopName={reportContext?.sopName}
+              sectionAffected={sectionRaw}
+              suggestedAction={finding.suggestedAction}
+              currentText={sopSnippet}
+              proposedText={(finding as any).__rewrittenVerbiage ?? proposedVerbiage}
+            />
 
             {finding.complianceLevel === 'compliant' && (
               <p className="text-sm text-gray-600 bg-emerald-50/50 border border-emerald-100 rounded-lg p-3">
