@@ -89,6 +89,7 @@ export interface FindingCardProps {
     complianceStatus: string;
   };
   index?: number;
+  serialNumber?: number;
   isSelected?: boolean;
   onToggleSelect?: (idx: number) => void;
   onToggleApplicable?: (id: string, checked: boolean) => void;
@@ -228,6 +229,7 @@ export default function FindingCard({
   sopId,
   reportContext,
   index,
+  serialNumber,
   isSelected,
   onToggleSelect,
   onToggleApplicable,
@@ -330,6 +332,12 @@ export default function FindingCard({
             onChange={() => onToggleSelect(index)}
             className="mt-1 h-4 w-4 text-purple-600 rounded cursor-pointer shrink-0"
           />
+        )}
+
+        {serialNumber !== undefined && (
+          <span className="shrink-0 flex items-center justify-center min-w-[2.25rem] h-9 px-2 rounded-lg bg-purple-600 border border-purple-700 text-base font-black text-white font-mono shadow-sm">
+            #{serialNumber}
+          </span>
         )}
 
         <div className="flex-1 min-w-0">
@@ -480,7 +488,7 @@ export default function FindingCard({
 
             {/* Evidence-based assessment */}
             {(isMeaningful(evidenceFound) || isMeaningful(evidenceMissing)) && (
-              <div className={`grid gap-4 ${isMeaningful(evidenceFound) && isMeaningful(evidenceMissing) ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
+              <div className="grid grid-cols-1 gap-4">
                 {isMeaningful(evidenceFound) && (
                 <section className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
                   <h4 className="text-[10px] font-black text-emerald-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
@@ -606,7 +614,7 @@ export default function FindingCard({
             )}
 
             {isActionable && (gapText || impactText) && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4">
                 <section className="rounded-xl border border-amber-200 bg-amber-50/80 p-4">
                   <h4 className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                     <AlertTriangle className="h-3.5 w-3.5" />

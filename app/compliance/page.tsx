@@ -272,6 +272,30 @@ function ChevronUpIcon() {
   return <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" /></svg>;
 }
 
+function parseSectionParts(section?: string): number[] {
+  const m = (section || '').match(/\d+(\.\d+)*/);
+  return m ? m[0].split('.').map(Number) : [];
+}
+
+// Orders findings by the SOP section they map to (e.g. "4.11.4.1 - Sampling procedure...")
+// so the report reads 1, 1.1, 1.2, 2, ... instead of jumping between sections. Findings
+// with no parseable section number (e.g. "N/A - Not Addressed") sort to the end.
+function compareSectionNumbers(a?: string, b?: string): number {
+  const pa = parseSectionParts(a);
+  const pb = parseSectionParts(b);
+  if (pa.length === 0 || pb.length === 0) {
+    if (pa.length !== pb.length) return pa.length === 0 ? 1 : -1;
+    return (a || '').localeCompare(b || '');
+  }
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const va = pa[i] ?? -1;
+    const vb = pb[i] ?? -1;
+    if (va !== vb) return va - vb;
+  }
+  return (a || '').localeCompare(b || '');
+}
+
 // ── Audit completeness report — verifies the entire guideline library was reviewed ──
 function AuditCompletenessReport({ report }: { report: ComplianceReport }) {
   const ac = report.auditCompleteness;
@@ -592,6 +616,10 @@ export default function ComplianceEnginePage() {
   const [finalSopOpen, setFinalSopOpen] = useState(false);
   const [isSummaryFullScreen, setIsSummaryFullScreen] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
+  const [hoveredFolder, setHoveredFolder] = useState<string | null>(null);
+  const [activeFolder, setActiveFolder] = useState<string | null>(null);
+  const groupRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const findingsScrollRef = useRef<HTMLDivElement | null>(null);
   const [applicableFindings, setApplicableFindings] = useState<Set<string>>(new Set());
   const [submittingApplicable, setSubmittingApplicable] = useState(false);
   const [applyingFixGapId, setApplyingFixGapId] = useState<string | null>(null);
@@ -1079,6 +1107,7 @@ export default function ComplianceEnginePage() {
   const handleSelectReport = async (report: ComplianceReport) => {
     setSelectedReport(report);
     setFilterGuideline('all');
+    setIsFullScreen(true);
     setLoadingFullReport(true);
     try {
       const res = await fetch(`/api/compliance/analyze?reportId=${report._id}`);
@@ -1192,6 +1221,60 @@ export default function ComplianceEnginePage() {
         return (b.f.matchConfidence ?? 0) - (a.f.matchConfidence ?? 0);
       });
   }, [selectedReport, filterStatus, filterGuideline, hideNotApplicable, hideFailedFindings]);
+
+  const groupedFindings = useMemo(() => {
+    const groupOrder = folders.map((f) => f.folderName);
+    const map = new Map<string, { f: ComplianceFinding; i: number }[]>();
+    for (const item of visibleFindings) {
+      const key = item.f.folderName || item.f.guidelineName || 'Other';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(item);
+    }
+    const orderedKeys = [
+      ...groupOrder.filter((k) => map.has(k)),
+      ...[...map.keys()].filter((k) => !groupOrder.includes(k)),
+    ];
+    let serial = 0;
+    return orderedKeys.map((folderName) => {
+      const items = [...map.get(folderName)!].sort((a, b) => compareSectionNumbers(a.f.sopSectionAffected, b.f.sopSectionAffected));
+      return {
+        folderName,
+        items: items.map((item) => ({ ...item, serial: ++serial })),
+      };
+    });
+  }, [visibleFindings, folders]);
+
+  // Falls back to the first guideline group whenever the active one scrolls out of the
+  // current filter/report (avoids setState-in-effect for the "no scroll yet" default).
+  const displayActiveFolder = useMemo(() => {
+    if (activeFolder && groupedFindings.some((g) => g.folderName === activeFolder)) return activeFolder;
+    return groupedFindings[0]?.folderName ?? null;
+  }, [activeFolder, groupedFindings]);
+
+  // Highlights the guideline chip for whichever group heading is currently at the top
+  // of the scrollable findings list, so the header tracks what the user is reading.
+  useEffect(() => {
+    const root = findingsScrollRef.current;
+    if (!root || groupedFindings.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((e) => e.isIntersecting);
+        if (visible.length === 0) return;
+        const topMost = visible.reduce((a, b) => (a.boundingClientRect.top <= b.boundingClientRect.top ? a : b));
+        const folderName = (topMost.target as HTMLElement).dataset.folder;
+        if (folderName) setActiveFolder(folderName);
+      },
+      { root, rootMargin: '0px 0px -75% 0px', threshold: 0 },
+    );
+
+    groupedFindings.forEach((g) => {
+      const el = groupRefs.current[g.folderName];
+      if (el) observer.observe(el);
+    });
+
+    return () => observer.disconnect();
+  }, [groupedFindings]);
 
   const allFindingsSelected =
     visibleFindings.length > 0 && visibleFindings.every(({ i }) => selectedFindingIds.has(i));
@@ -2408,9 +2491,122 @@ export default function ComplianceEnginePage() {
                       </button>
                     </div>
                   </div>
+
+                  {selectedReport.sopName && (
+                    <div className="pt-4 mt-1 border-t border-gray-100">
+                      <p className="text-base font-black text-gray-800 leading-tight truncate">
+                        {selectedReport.sopIdentifier ? `${selectedReport.sopIdentifier} — ` : ''}{selectedReport.sopName}
+                      </p>
+                    </div>
+                  )}
+
+                  {groupedFindings.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 mt-3">
+                      {groupedFindings.map((group) => {
+                        const isActive = displayActiveFolder === group.folderName;
+                        return (
+                          <div
+                            key={group.folderName}
+                            className="relative"
+                            onMouseEnter={() => setHoveredFolder(group.folderName)}
+                            onMouseLeave={() => setHoveredFolder((v) => (v === group.folderName ? null : v))}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                groupRefs.current[group.folderName]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                              }
+                              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors ${
+                                isActive
+                                  ? 'bg-purple-600 border-purple-600 text-white shadow-md shadow-purple-200'
+                                  : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300'
+                              }`}
+                            >
+                              <BookOpen className="h-3 w-3" />
+                              {group.folderName} ({group.items.length})
+                            </button>
+                            {hoveredFolder === group.folderName && (
+                              <div className="absolute left-0 top-full mt-1 z-20 whitespace-nowrap px-2.5 py-1.5 rounded-lg bg-gray-900 text-white text-[11px] font-semibold shadow-lg">
+                                {group.folderName} · {group.items.length} result{group.items.length !== 1 ? 's' : ''}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-3 pt-3 mt-3 border-t border-gray-100">
+                    <button
+                      onClick={toggleSelectAllFindings}
+                      className="flex items-center gap-2 text-sm font-semibold text-gray-600 hover:text-gray-900 transition-colors"
+                    >
+                      {allFindingsSelected ? (
+                        <CheckSquare className="h-5 w-5 text-purple-600" />
+                      ) : someFindingsSelected ? (
+                        <div className="h-5 w-5 rounded border-2 border-purple-500 bg-purple-100 flex items-center justify-center">
+                          <div className="h-2 w-2 bg-purple-600 rounded-sm" />
+                        </div>
+                      ) : (
+                        <Square className="h-5 w-5 text-gray-400" />
+                      )}
+                      {allFindingsSelected ? 'Deselect All' : 'Select All Results'}
+                      {someFindingsSelected && (
+                        <span className="ml-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-bold rounded-full border border-purple-200">
+                          {selectedFindingIds.size} selected
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => setShowConsolidatedSummary(true)}
+                      disabled={selectedFindingIds.size === 0}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                        selectedFindingIds.size > 0
+                          ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-md shadow-purple-200'
+                          : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                      }`}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Generate Consolidated Summary
+                      {selectedFindingIds.size > 0 && (
+                        <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">{selectedFindingIds.size}</span>
+                      )}
+                    </button>
+
+                    {/* View Final SOP with all fixes */}
+                    {(() => {
+                      const actionableFixes = (selectedReport?.findings ?? []).filter(
+                        (f) =>
+                          (f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant') &&
+                          (f.suggestedText || f.suggestedAction) &&
+                          f.sopTextSnippet?.trim(),
+                      );
+                      return (
+                        <button
+                          onClick={() => setFinalSopOpen(true)}
+                          disabled={actionableFixes.length === 0}
+                          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                            actionableFixes.length > 0
+                              ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-200'
+                              : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                          }`}
+                          title="Preview all proposed changes and export the final corrected SOP"
+                        >
+                          <ScrollText className="h-3.5 w-3.5" />
+                          View Final SOP
+                          {actionableFixes.length > 0 && (
+                            <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">
+                              {actionableFixes.length} fix{actionableFixes.length !== 1 ? 'es' : ''}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })()}
+                  </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto pr-2 space-y-6 pb-10">
+                <div ref={findingsScrollRef} className="flex-1 overflow-y-auto pr-2 space-y-6 pb-10">
 
                   <div className="mb-6">
                     <label className="block text-sm font-medium text-gray-600 mb-2">Filter by Guideline Folder</label>
@@ -2559,95 +2755,24 @@ export default function ComplianceEnginePage() {
                   )}
 
                   <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                    <div className="p-5 border-b border-gray-100 bg-white flex flex-col gap-3 sticky top-0 z-10">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-lg font-bold text-gray-800 flex items-center gap-3">
-                          <span className="text-xl">📔</span>
-                          Findings with Guideline References
-                          {filterStatus !== 'all' && (
-                            <span className="text-[10px] font-black text-white px-2.5 py-1 bg-purple-600 rounded-md uppercase tracking-[0.2em]">
-                              {filterStatus}
-                            </span>
-                          )}
-                        </h3>
+                    <div className="p-5 border-b border-gray-100 bg-white flex items-center justify-between">
+                      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-3">
+                        <span className="text-xl">📔</span>
+                        Findings with Guideline References
                         {filterStatus !== 'all' && (
-                          <button
-                            onClick={() => setFilterStatus('all')}
-                            className="text-xs font-medium text-purple-600 hover:text-purple-700 hover:underline"
-                          >
-                            Clear Filters
-                          </button>
+                          <span className="text-[10px] font-black text-white px-2.5 py-1 bg-purple-600 rounded-md uppercase tracking-[0.2em]">
+                            {filterStatus}
+                          </span>
                         )}
-                      </div>
-
-                      <div className="flex items-center justify-between gap-3 pt-1 border-t border-gray-100">
+                      </h3>
+                      {filterStatus !== 'all' && (
                         <button
-                          onClick={toggleSelectAllFindings}
-                          className="flex items-center gap-2 text-sm font-semibold text-gray-600 hover:text-gray-900 transition-colors"
+                          onClick={() => setFilterStatus('all')}
+                          className="text-xs font-medium text-purple-600 hover:text-purple-700 hover:underline"
                         >
-                          {allFindingsSelected ? (
-                            <CheckSquare className="h-5 w-5 text-purple-600" />
-                          ) : someFindingsSelected ? (
-                            <div className="h-5 w-5 rounded border-2 border-purple-500 bg-purple-100 flex items-center justify-center">
-                              <div className="h-2 w-2 bg-purple-600 rounded-sm" />
-                            </div>
-                          ) : (
-                            <Square className="h-5 w-5 text-gray-400" />
-                          )}
-                          {allFindingsSelected ? 'Deselect All' : 'Select All Results'}
-                          {someFindingsSelected && (
-                            <span className="ml-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-bold rounded-full border border-purple-200">
-                              {selectedFindingIds.size} selected
-                            </span>
-                          )}
+                          Clear Filters
                         </button>
-
-                        <button
-                          onClick={() => setShowConsolidatedSummary(true)}
-                          disabled={selectedFindingIds.size === 0}
-                          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                            selectedFindingIds.size > 0
-                              ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-md shadow-purple-200'
-                              : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                          }`}
-                        >
-                          <Sparkles className="h-3.5 w-3.5" />
-                          Generate Consolidated Summary
-                          {selectedFindingIds.size > 0 && (
-                            <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">{selectedFindingIds.size}</span>
-                          )}
-                        </button>
-
-                        {/* View Final SOP with all fixes */}
-                        {(() => {
-                          const actionableFixes = (selectedReport?.findings ?? []).filter(
-                            (f) =>
-                              (f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant') &&
-                              (f.suggestedText || f.suggestedAction) &&
-                              f.sopTextSnippet?.trim(),
-                          );
-                          return (
-                            <button
-                              onClick={() => setFinalSopOpen(true)}
-                              disabled={actionableFixes.length === 0}
-                              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                                actionableFixes.length > 0
-                                  ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-200'
-                                  : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                              }`}
-                              title="Preview all proposed changes and export the final corrected SOP"
-                            >
-                              <ScrollText className="h-3.5 w-3.5" />
-                              View Final SOP
-                              {actionableFixes.length > 0 && (
-                                <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">
-                                  {actionableFixes.length} fix{actionableFixes.length !== 1 ? 'es' : ''}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })()}
-                      </div>
+                      )}
                     </div>
 
                     <div className="p-6 space-y-6 bg-gray-50 min-h-[400px]">
@@ -2657,43 +2782,63 @@ export default function ComplianceEnginePage() {
                           <p className="text-gray-500 text-sm">Loading full report...</p>
                         </div>
                       ) : selectedReport.findings && selectedReport.findings.length > 0 ? (
-                        visibleFindings.map(({ f, i }) => (
-                          <div
-                            key={f.gapId ?? i}
-                            className={`transition-all duration-200 rounded-2xl ${
-                              selectedFindingIds.has(i) ? 'ring-2 ring-purple-400 ring-offset-2 ring-offset-gray-50' : ''
-                            }`}
-                          >
-                            <FindingCard
-                              finding={f}
-                              sopId={selectedReport.sopId ?? sops.find(s => s.identifier === selectedReport.sopIdentifier)?._id}
-                              reportContext={{
-                                sopIdentifier: selectedReport.sopIdentifier,
-                                sopName: selectedReport.sopName,
-                                department: selectedReport.department,
-                                overallScore: selectedReport.overallScore,
-                                complianceStatus: selectedReport.complianceStatus,
-                              }}
-                              index={i}
-                              defaultExpanded={
-                                f.complianceLevel === 'partial' ||
-                                f.complianceLevel === 'non-compliant' ||
-                                f.complianceLevel === 'not-applicable'
-                              }
-                              isSelected={selectedFindingIds.has(i)}
-                              onToggleSelect={(idx) => {
-                                const next = new Set(selectedFindingIds);
-                                if (next.has(idx)) next.delete(idx);
-                                else next.add(idx);
-                                setSelectedFindingIds(next);
-                              }}
-                              onToggleApplicable={handleToggleApplicable}
-                              isApplicable={applicableFindings.has(f.gapId ?? f._id ?? `finding-${i}`)}
-                              showCheckbox
-                              onReviewStatusChange={f.gapId ? handleReviewStatusChange : undefined}
-                              onApplyFix={f.gapId ? handleApplyFix : undefined}
-                              applyingFix={applyingFixGapId === f.gapId}
-                            />
+                        groupedFindings.map((group) => (
+                          <div key={group.folderName} className="space-y-4">
+                            <div
+                              ref={(el) => { groupRefs.current[group.folderName] = el; }}
+                              data-folder={group.folderName}
+                              className="flex items-center gap-3 pt-2 scroll-mt-4"
+                            >
+                              <span className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 border border-blue-300 rounded-lg text-xs font-black text-blue-800 uppercase tracking-wider">
+                                <BookOpen className="h-3.5 w-3.5" />
+                                {group.folderName}
+                              </span>
+                              <span className="text-[11px] text-gray-400 font-bold">
+                                {group.items.length} result{group.items.length !== 1 ? 's' : ''}
+                              </span>
+                              <div className="flex-1 h-px bg-gray-200" />
+                            </div>
+
+                            {group.items.map(({ f, i, serial }) => (
+                              <div
+                                key={f.gapId ?? i}
+                                className={`transition-all duration-200 rounded-2xl ${
+                                  selectedFindingIds.has(i) ? 'ring-2 ring-purple-400 ring-offset-2 ring-offset-gray-50' : ''
+                                }`}
+                              >
+                                <FindingCard
+                                  finding={f}
+                                  sopId={selectedReport.sopId ?? sops.find(s => s.identifier === selectedReport.sopIdentifier)?._id}
+                                  reportContext={{
+                                    sopIdentifier: selectedReport.sopIdentifier,
+                                    sopName: selectedReport.sopName,
+                                    department: selectedReport.department,
+                                    overallScore: selectedReport.overallScore,
+                                    complianceStatus: selectedReport.complianceStatus,
+                                  }}
+                                  index={i}
+                                  serialNumber={serial}
+                                  defaultExpanded={
+                                    f.complianceLevel === 'partial' ||
+                                    f.complianceLevel === 'non-compliant' ||
+                                    f.complianceLevel === 'not-applicable'
+                                  }
+                                  isSelected={selectedFindingIds.has(i)}
+                                  onToggleSelect={(idx) => {
+                                    const next = new Set(selectedFindingIds);
+                                    if (next.has(idx)) next.delete(idx);
+                                    else next.add(idx);
+                                    setSelectedFindingIds(next);
+                                  }}
+                                  onToggleApplicable={handleToggleApplicable}
+                                  isApplicable={applicableFindings.has(f.gapId ?? f._id ?? `finding-${i}`)}
+                                  showCheckbox
+                                  onReviewStatusChange={f.gapId ? handleReviewStatusChange : undefined}
+                                  onApplyFix={f.gapId ? handleApplyFix : undefined}
+                                  applyingFix={applyingFixGapId === f.gapId}
+                                />
+                              </div>
+                            ))}
                           </div>
                         ))
                       ) : (
