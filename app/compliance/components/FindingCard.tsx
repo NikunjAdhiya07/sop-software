@@ -214,6 +214,40 @@ function applicabilityBadge(applicability?: string): { label: string; className:
   }
 }
 
+function levelOutlineBadge(level: string): { label: string; className: string } {
+  switch (level) {
+    case 'compliant':
+      return { label: 'Compliant', className: 'border-emerald-300 text-emerald-700 bg-white' };
+    case 'partial':
+      return { label: 'Partially Compliant', className: 'border-amber-300 text-amber-700 bg-white' };
+    case 'non-compliant':
+      return { label: 'Non-Compliant', className: 'border-rose-300 text-rose-700 bg-white' };
+    case 'not-applicable':
+      return { label: 'N/A', className: 'border-slate-300 text-slate-600 bg-white' };
+    default:
+      return { label: 'Analysis Failed', className: 'border-gray-300 text-gray-600 bg-white' };
+  }
+}
+
+function severityOutlineBadge(severity: string): { label: string; className: string } {
+  switch (severity) {
+    case 'critical':
+      return { label: 'Critical', className: 'border-red-400 text-red-700 bg-white' };
+    case 'major':
+      return { label: 'Major', className: 'border-orange-400 text-orange-700 bg-white' };
+    case 'minor':
+      return { label: 'Minor', className: 'border-yellow-400 text-yellow-700 bg-white' };
+    default:
+      return { label: 'Info', className: 'border-blue-300 text-blue-700 bg-white' };
+  }
+}
+
+function confidenceColor(pct: number): string {
+  if (pct >= 85) return 'text-emerald-600';
+  if (pct >= 60) return 'text-amber-600';
+  return 'text-rose-600';
+}
+
 function scopeOwnerLabel(owner?: string): string {
   switch (owner) {
     case 'referenced-sop': return 'Owned by a referenced SOP';
@@ -488,7 +522,7 @@ export default function FindingCard({
 
             {/* Evidence-based assessment */}
             {(isMeaningful(evidenceFound) || isMeaningful(evidenceMissing)) && (
-              <div className="grid grid-cols-1 gap-4">
+              <div className={`grid gap-4 ${isMeaningful(evidenceFound) && isMeaningful(evidenceMissing) ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
                 {isMeaningful(evidenceFound) && (
                 <section className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
                   <h4 className="text-[10px] font-black text-emerald-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
@@ -514,13 +548,55 @@ export default function FindingCard({
               </div>
             )}
 
-            {/* Confidence + evidence strength + source traceability */}
-            <div className="flex flex-wrap items-center gap-2">
-              {confidence > 0 && (
-                <span className="px-2.5 py-1 rounded-lg border border-gray-200 bg-gray-50 text-[11px] font-bold text-gray-600">
-                  AI Confidence: {confidence}%
+            {/* Status + source + applicability + confidence toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50/60 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                {(() => {
+                  const lvl = levelOutlineBadge(finding.complianceLevel);
+                  return (
+                    <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wide ${lvl.className}`}>
+                      <AlertTriangle className="h-3 w-3" />
+                      {lvl.label}
+                    </span>
+                  );
+                })()}
+                {(() => {
+                  const sev = severityOutlineBadge(finding.issueSeverity ?? 'informational');
+                  return (
+                    <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wide ${sev.className}`}>
+                      <AlertTriangle className="h-3 w-3" />
+                      {sev.label}
+                    </span>
+                  );
+                })()}
+                <span className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide truncate">
+                  {[guidelineTag, finding.pdfName || finding.clauseTitle, pageRef ? `P.${pageRef}` : '']
+                    .filter(Boolean)
+                    .join(' · ')}
                 </span>
-              )}
+              </div>
+              <div className="flex items-center gap-4 shrink-0">
+                {isActionable && onToggleApplicable && (
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isApplicable ?? false}
+                      onChange={(e) => onToggleApplicable(id, e.target.checked)}
+                      className="h-3.5 w-3.5 text-purple-600 rounded"
+                    />
+                    <span className="text-[11px] text-gray-500 font-semibold">Applicable</span>
+                  </label>
+                )}
+                {confidence > 0 && (
+                  <div className="text-right leading-none">
+                    <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-0.5">Confidence</p>
+                    <p className={`text-lg font-black ${confidenceColor(confidence)}`}>{confidence}%</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
               {evBadge && (
                 <span className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold ${evBadge.className}`}>
                   {evBadge.label}
@@ -593,7 +669,7 @@ export default function FindingCard({
             )}
 
             {(sopSnippet || displaySectionNum) && (
-              <section className="rounded-xl border-2 border-purple-200 bg-purple-50/50 p-4">
+              <section className="rounded-xl border border-purple-200 bg-purple-50/50 p-4">
                 <h4 className="text-[10px] font-black text-purple-700 uppercase tracking-widest mb-3 flex items-center gap-1.5">
                   <FileText className="h-3.5 w-3.5" />
                   Current SOP Content
@@ -614,7 +690,7 @@ export default function FindingCard({
             )}
 
             {isActionable && (gapText || impactText) && (
-              <div className="grid grid-cols-1 gap-4">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <section className="rounded-xl border border-amber-200 bg-amber-50/80 p-4">
                   <h4 className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                     <AlertTriangle className="h-3.5 w-3.5" />
