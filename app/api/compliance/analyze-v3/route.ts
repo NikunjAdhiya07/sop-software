@@ -249,7 +249,11 @@ export async function POST(request: NextRequest) {
     if (guidelineFilters?.folderName) guidelineQuery.folderName = guidelineFilters.folderName;
     if (guidelineFilters?.category) guidelineQuery.category = guidelineFilters.category;
     if (guidelineFilters?.guidelineType) guidelineQuery.guidelineType = guidelineFilters.guidelineType;
-    
+    // Restrict to the guidelines the user explicitly selected
+    if (Array.isArray(guidelineIds) && guidelineIds.length > 0) {
+      guidelineQuery._id = { $in: guidelineIds };
+    }
+
     const guidelines = await SOPGuideline.find(guidelineQuery)
       .select('name folderName pdfName guidelineType category clauses ocrStatus')
       .lean();
