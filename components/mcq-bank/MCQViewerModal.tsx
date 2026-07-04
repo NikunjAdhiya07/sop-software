@@ -16,6 +16,7 @@ import {
   Search,
   Sparkles,
   Trash2,
+  Wand2,
   X,
 } from "lucide-react";
 
@@ -81,6 +82,8 @@ interface QuestionCardProps {
 
 function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpen }: QuestionCardProps) {
   const [updating, setUpdating] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
   const difficulty = displayDifficulty(mcq.difficulty);
 
   async function toggle(field: "isChecked" | "isReviewed" | "isSimilar") {
@@ -94,6 +97,25 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpe
       if (res.ok) onUpdated(originalIndex, { [field]: !mcq[field] });
     } finally {
       setUpdating(null);
+    }
+  }
+
+  async function regenerate() {
+    setRegenerating(true);
+    setRegenError(null);
+    try {
+      const res = await fetch("/api/mcq-bank/regenerate-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bankId, questionIndex: originalIndex }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error ?? "Regeneration failed");
+      onUpdated(originalIndex, data.mcq as Partial<MCQ>);
+    } catch (e) {
+      setRegenError(e instanceof Error ? e.message : "Regeneration failed");
+    } finally {
+      setRegenerating(false);
     }
   }
 
@@ -156,10 +178,19 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpe
           <div className="mb-2.5 min-w-0">
             <div className="flex min-w-0 items-start gap-1.5">
               <span className="mt-px shrink-0 select-none text-[15px] font-black text-purple-600">Q.</span>
-              <p className="flex-1 min-w-0 break-words text-[15px] font-bold leading-snug text-gray-800 line-clamp-3">
+              <p className={`flex-1 min-w-0 break-words text-[15px] font-bold leading-snug text-gray-800 line-clamp-3 ${regenerating ? "opacity-40" : ""}`}>
                 {sl ? highlight(mcq.question, sl) : mcq.question}
               </p>
             </div>
+            {regenerating && (
+              <div className="mt-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-violet-600">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Regenerating with Claude…
+              </div>
+            )}
+            {regenError && !regenerating && (
+              <div className="mt-1.5 text-[11px] font-semibold text-rose-600">{regenError}</div>
+            )}
           </div>
 
           {/* Options 2×2 */}
@@ -194,10 +225,10 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpe
           onClick={(e) => e.stopPropagation()}
         >
           {/* Similar */}
-          <button disabled={!!updating}
+          <button disabled={!!updating || regenerating}
             onClick={() => toggle("isSimilar")}
             title="Toggle Similar"
-            className={`rounded-lg p-2 transition-all ${
+            className={`rounded-lg p-2 transition-all disabled:opacity-40 ${
               mcq.isSimilar
                 ? "bg-amber-500 text-white shadow-sm"
                 : "border border-gray-200 bg-white text-gray-400 hover:border-amber-200 hover:bg-amber-50 hover:text-amber-600"
@@ -205,10 +236,10 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpe
             {updating === "isSimilar" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Copy className="h-3.5 w-3.5" />}
           </button>
           {/* Approve */}
-          <button disabled={!!updating}
+          <button disabled={!!updating || regenerating}
             onClick={() => toggle("isChecked")}
             title="Approve"
-            className={`rounded-lg p-2 transition-all ${
+            className={`rounded-lg p-2 transition-all disabled:opacity-40 ${
               mcq.isChecked
                 ? "bg-emerald-500 text-white shadow-sm"
                 : "border border-gray-200 bg-white text-gray-400 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-600"
@@ -216,15 +247,22 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpe
             {updating === "isChecked" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
           </button>
           {/* Review */}
-          <button disabled={!!updating}
+          <button disabled={!!updating || regenerating}
             onClick={() => toggle("isReviewed")}
             title="Mark Reviewed"
-            className={`rounded-lg p-2 transition-all ${
+            className={`rounded-lg p-2 transition-all disabled:opacity-40 ${
               mcq.isReviewed
                 ? "bg-blue-500 text-white shadow-sm"
                 : "border border-gray-200 bg-white text-gray-400 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600"
             }`}>
             {updating === "isReviewed" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+          </button>
+          {/* Regenerate (Claude) */}
+          <button disabled={!!updating || regenerating}
+            onClick={regenerate}
+            title="Regenerate this question with Claude"
+            className="rounded-lg border border-gray-200 bg-white p-2 text-gray-400 transition-all hover:border-violet-200 hover:bg-violet-50 hover:text-violet-600 disabled:opacity-40">
+            {regenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
           </button>
         </div>
       </div>
@@ -284,8 +322,30 @@ export function MCQViewerModal({ bankId, onClose, onBack }: MCQViewerModalProps)
   const [searchVisible, setSearchVisible] = useState(false);
   const [isMaximized, setIsMaximized] = useState(true);
   const [selectedQuestion, setSelectedQuestion] = useState<{ mcq: MCQ; index: number } | null>(null);
+  // Individual regeneration always uses Claude — this just reflects whether the
+  // local Claude CLI/subscription is currently connected.
+  const [claudeStatus, setClaudeStatus] = useState<{ ok: boolean; loading: boolean; mcqModel?: string; error?: string }>({
+    ok: false,
+    loading: true,
+  });
 
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/llm/claude-status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const c = data.claude ?? {};
+        setClaudeStatus({ ok: Boolean(data.success && c.loggedIn), mcqModel: c.mcqModel, error: c.error, loading: false });
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setClaudeStatus({ ok: false, loading: false, error: e instanceof Error ? e.message : "Could not check Claude status" });
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   // Debounce search
   useEffect(() => {
@@ -450,6 +510,27 @@ export function MCQViewerModal({ bankId, onClose, onBack }: MCQViewerModalProps)
             </div>
 
             <div className="flex items-center gap-2">
+              {/* Selected-AI indicator for individual question regeneration — always Claude */}
+              <div
+                title={
+                  claudeStatus.loading
+                    ? "Checking Claude connection…"
+                    : claudeStatus.ok
+                    ? `Individual regeneration uses Claude (${claudeStatus.mcqModel ?? "claude-haiku"})`
+                    : `Claude not connected: ${claudeStatus.error ?? "unknown error"}`
+                }
+                className={`hidden items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider sm:flex ${
+                  claudeStatus.loading
+                    ? "border-gray-200 bg-gray-50 text-gray-400"
+                    : claudeStatus.ok
+                    ? "border-violet-200 bg-violet-50 text-violet-700"
+                    : "border-rose-200 bg-rose-50 text-rose-600"
+                }`}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                {claudeStatus.loading ? "Claude…" : claudeStatus.ok ? "Claude ✓" : "Claude !"}
+              </div>
+
               {bank && (
                 <div className="hidden items-center justify-center rounded-lg border border-purple-200 bg-purple-50 px-2 py-1 md:flex min-w-[2.5rem]">
                   <span className="text-[11px] font-bold text-purple-700">{filtered.length}</span>

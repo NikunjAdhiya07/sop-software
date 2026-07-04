@@ -311,18 +311,15 @@ function EmployeeBubbleRow({
   names,
   variant,
   onNameClick,
-  onMoreClick,
 }: {
   names: string[];
   variant: 'due' | 'pending';
   onNameClick: (name: string) => void;
-  onMoreClick?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
-  const moreWrapRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(names.length);
-  const [popupOpen, setPopupOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const bubbleClass =
     variant === 'due'
@@ -372,21 +369,10 @@ function EmployeeBubbleRow({
     return () => ro.disconnect();
   }, [recomputeVisible]);
 
-  useEffect(() => {
-    if (!popupOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (moreWrapRef.current && !moreWrapRef.current.contains(e.target as Node)) {
-        setPopupOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [popupOpen]);
-
   if (names.length === 0) return null;
 
   const hidden = names.slice(visibleCount);
-  const visible = names.slice(0, visibleCount);
+  const visible = expanded ? names : names.slice(0, visibleCount);
 
   const renderBubble = (n: string, key?: string) => (
     <button
@@ -403,7 +389,7 @@ function EmployeeBubbleRow({
   );
 
   return (
-    <div className="relative min-w-0" ref={containerRef}>
+    <div className="min-w-0" ref={containerRef}>
       <div
         ref={measureRef}
         aria-hidden
@@ -411,30 +397,28 @@ function EmployeeBubbleRow({
       >
         {names.map((n) => renderBubble(n, `m-${n}`))}
       </div>
-      <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
+      {/* Not expanded: single line, truncated with a "+N more" chip. Expanded:
+          every name renders here, wrapping onto as many lines as needed, in the
+          same section (no floating popup, no separate modal). */}
+      <div className={`flex items-center gap-1.5 min-w-0 ${expanded ? 'flex-wrap' : 'overflow-hidden'}`}>
         {visible.map((n) => renderBubble(n))}
-        {hidden.length > 0 ? (
-          <div className="relative shrink-0" ref={moreWrapRef}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (onMoreClick) onMoreClick();
-                else setPopupOpen((v) => !v);
-              }}
-              className={`text-[9px] font-semibold px-1.5 py-0 rounded-md border leading-tight transition cursor-pointer whitespace-nowrap ${bubbleClass}`}
-            >
-              +{hidden.length} more
-            </button>
-            {!onMoreClick && popupOpen ? (
-              <div
-                className="absolute left-0 top-full z-50 mt-1 min-w-[12rem] max-w-sm max-h-56 overflow-y-auto rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex flex-wrap gap-1.5">{hidden.map((n) => renderBubble(n, `h-${n}`))}</div>
-              </div>
-            ) : null}
-          </div>
+        {!expanded && hidden.length > 0 ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setExpanded(true); }}
+            className={`shrink-0 text-[9px] font-semibold px-1.5 py-0 rounded-md border leading-tight transition cursor-pointer whitespace-nowrap ${bubbleClass}`}
+          >
+            +{hidden.length} more
+          </button>
+        ) : null}
+        {expanded ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
+            className={`shrink-0 text-[9px] font-semibold px-1.5 py-0 rounded-md border leading-tight transition cursor-pointer whitespace-nowrap ${bubbleClass}`}
+          >
+            Show less
+          </button>
         ) : null}
       </div>
     </div>
@@ -5714,7 +5698,7 @@ export default function InductionTrainingMatrixPage() {
 
     const pendingBottom =
       completed.length > 0 ? (
-        <EmployeeBubbleRow names={completed} variant="due" onNameClick={openEmployee} onMoreClick={openSopModal} />
+        <EmployeeBubbleRow names={completed} variant="due" onNameClick={openEmployee} />
       ) : null;
 
     const docPaths = data?.dbDocPathsByCode?.[stripVersion(sop.sopCode).toUpperCase()]
@@ -5801,7 +5785,7 @@ export default function InductionTrainingMatrixPage() {
             </button>
           </div>
 
-          <div className={`p-4 ${detailModal.kind === 'sop' ? 'space-y-3 overflow-visible' : 'max-h-[75vh] overflow-auto p-5 space-y-6'}`}>
+          <div className={`p-4 ${detailModal.kind === 'sop' ? 'flex-1 min-h-0 overflow-y-auto space-y-3' : 'max-h-[75vh] overflow-auto p-5 space-y-6'}`}>
             {detailModal.kind === 'sop' && (() => {
               const sortFn = (a: any, b: any) => {
                 const va = (a[sopDetailSortField] || '').toLowerCase();
@@ -5965,45 +5949,47 @@ export default function InductionTrainingMatrixPage() {
                         <div className="text-sm font-bold text-emerald-800">Assigned Employees</div>
                         <div className="text-xs font-semibold text-emerald-700">{foundRows.length} / {(detailModal.foundEmployees || []).length}</div>
                       </div>
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-white">
-                          <tr>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('name')}>
-                              Employee <SortIcon field="name" />
-                            </th>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('designation')}>
-                              Designation <SortIcon field="designation" />
-                            </th>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('department')}>
-                              Dept <SortIcon field="department" />
-                            </th>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black whitespace-nowrap">Month</th>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black whitespace-nowrap">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {foundRows.map((r, i) => (
-                            <tr
-                              key={`f-${r.name}-${i}`}
-                              className="border-b border-gray-50 hover:bg-emerald-50/30 cursor-pointer"
-                              onClick={() => openEmployeeModal(r.name, r.department)}
-                            >
-                              <td className="px-2 py-1 font-semibold text-gray-900 hover:text-emerald-800">{r.name}</td>
-                              <td className="px-2 py-1 text-black">{r.designation || '—'}</td>
-                              <td className="px-2 py-1 text-black">{r.department || '—'}</td>
-                              <td className="px-2 py-1 font-bold text-emerald-700">{r.month || dm.monthLabel || '—'}</td>
-                              <td className="px-2 py-1">
-                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${r.completed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                                  {r.completed ? 'Completed' : 'Pending'}
-                                </span>
-                              </td>
+                      <div className="max-h-[55vh] overflow-y-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="sticky top-0 z-10 bg-white">
+                            <tr>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('name')}>
+                                Employee <SortIcon field="name" />
+                              </th>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('designation')}>
+                                Designation <SortIcon field="designation" />
+                              </th>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('department')}>
+                                Dept <SortIcon field="department" />
+                              </th>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black whitespace-nowrap">Month</th>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black whitespace-nowrap">Status</th>
                             </tr>
-                          ))}
-                          {foundRows.length === 0 && (
-                            <tr><td colSpan={5} className="px-3 py-6 text-center text-black">No assigned employees.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {foundRows.map((r, i) => (
+                              <tr
+                                key={`f-${r.name}-${i}`}
+                                className="border-b border-gray-50 hover:bg-emerald-50/30 cursor-pointer"
+                                onClick={() => openEmployeeModal(r.name, r.department)}
+                              >
+                                <td className="px-2 py-1 font-semibold text-gray-900 hover:text-emerald-800">{r.name}</td>
+                                <td className="px-2 py-1 text-black">{r.designation || '—'}</td>
+                                <td className="px-2 py-1 text-black">{r.department || '—'}</td>
+                                <td className="px-2 py-1 font-bold text-emerald-700">{r.month || dm.monthLabel || '—'}</td>
+                                <td className="px-2 py-1">
+                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${r.completed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                    {r.completed ? 'Completed' : 'Pending'}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                            {foundRows.length === 0 && (
+                              <tr><td colSpan={5} className="px-3 py-6 text-center text-black">No assigned employees.</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
 
                     {/* Not Necessary — employees with no training record for this SOP */}
@@ -6012,37 +5998,39 @@ export default function InductionTrainingMatrixPage() {
                         <div className="text-sm font-bold text-slate-800">Not Necessary</div>
                         <div className="text-xs font-semibold text-slate-600">{missingRows.length} / {(detailModal.missingEmployees || []).length}</div>
                       </div>
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-white">
-                          <tr>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('name')}>
-                              Employee <SortIcon field="name" />
-                            </th>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('designation')}>
-                              Designation <SortIcon field="designation" />
-                            </th>
-                            <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('department')}>
-                              Dept <SortIcon field="department" />
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {missingRows.map((r, i) => (
-                            <tr
-                              key={`m-${r.name}-${i}`}
-                              className="border-b border-gray-50 hover:bg-slate-50/60 cursor-pointer"
-                              onClick={() => openEmployeeModal(r.name, r.department)}
-                            >
-                              <td className="px-2 py-1 font-semibold text-gray-900 hover:text-slate-800">{r.name}</td>
-                              <td className="px-2 py-1 text-black">{r.designation || '—'}</td>
-                              <td className="px-2 py-1 text-black">{r.department || '—'}</td>
+                      <div className="max-h-[55vh] overflow-y-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="sticky top-0 z-10 bg-white">
+                            <tr>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('name')}>
+                                Employee <SortIcon field="name" />
+                              </th>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('designation')}>
+                                Designation <SortIcon field="designation" />
+                              </th>
+                              <th className="border-b px-2 py-1.5 font-semibold text-black cursor-pointer select-none whitespace-nowrap" onClick={() => toggle('department')}>
+                                Dept <SortIcon field="department" />
+                              </th>
                             </tr>
-                          ))}
-                          {missingRows.length === 0 && (
-                            <tr><td colSpan={3} className="px-3 py-6 text-center text-black">No "Not Necessary" employees.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {missingRows.map((r, i) => (
+                              <tr
+                                key={`m-${r.name}-${i}`}
+                                className="border-b border-gray-50 hover:bg-slate-50/60 cursor-pointer"
+                                onClick={() => openEmployeeModal(r.name, r.department)}
+                              >
+                                <td className="px-2 py-1 font-semibold text-gray-900 hover:text-slate-800">{r.name}</td>
+                                <td className="px-2 py-1 text-black">{r.designation || '—'}</td>
+                                <td className="px-2 py-1 text-black">{r.department || '—'}</td>
+                              </tr>
+                            ))}
+                            {missingRows.length === 0 && (
+                              <tr><td colSpan={3} className="px-3 py-6 text-center text-black">No "Not Necessary" employees.</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
                 </div>
