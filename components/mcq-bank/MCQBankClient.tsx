@@ -113,6 +113,9 @@ interface RegistryEntry {
   enMcqCount: number;
   guMcqCount: number;
   isObsoleteMcq?: boolean;
+  /** Count of annexure files linked to this SOP family — included in MCQ
+   *  generation prompts when > 0. */
+  annexureCount: number;
 }
 
 type McqLang = "English" | "Gujarati";
@@ -651,6 +654,11 @@ function McqGenProgressModal({
               <p className={`mt-0.5 line-clamp-2 text-xs ${isDone || isError || isCancelled ? "text-gray-600" : "text-white/75"}`}>
                 {sopTitle}
               </p>
+              <p className={`mt-1 text-[11px] font-medium ${isDone || isError || isCancelled ? "text-gray-500" : "text-white/70"}`}>
+                {entry.annexureCount > 0
+                  ? `📎 Including ${entry.annexureCount} linked annexure${entry.annexureCount === 1 ? "" : "s"}`
+                  : "No annexures linked — based on main SOP content only"}
+              </p>
             </div>
             {(isDone || isError || isCancelled) && (
               <button
@@ -1071,6 +1079,21 @@ function RegistryRow({
           {gujTitle && (
             <span className="line-clamp-2 text-[10px] font-bold leading-tight text-indigo-700 wrap-break-word" title={gujTitle}>
               {gujTitle}
+            </span>
+          )}
+          {entry.annexureCount > 0 ? (
+            <span
+              className="mt-0.5 inline-flex w-fit items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-semibold text-emerald-700"
+              title={`${entry.annexureCount} annexure file(s) linked — their content is included when MCQs are generated`}
+            >
+              📎 {entry.annexureCount} annexure{entry.annexureCount === 1 ? "" : "s"} linked
+            </span>
+          ) : (
+            <span
+              className="mt-0.5 inline-flex w-fit items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-semibold text-gray-400"
+              title="No annexure files are linked to this SOP — generated MCQs are based on the main SOP content only"
+            >
+              No annexures linked
             </span>
           )}
         </div>
@@ -1912,16 +1935,19 @@ export function MCQBankClient() {
 
     const sorted = [...rows].sort((a, b) => {
       let cmp = 0;
-      if (sortCol === "name") cmp = a.sopName.localeCompare(b.sopName);
-      else if (sortCol === "questions" || sortCol === "totalMcqs") cmp = b.totalMcqs - a.totalMcqs;
-      else if (sortCol === "enMcqCount") cmp = b.enMcqCount - a.enMcqCount;
-      else if (sortCol === "guMcqCount") cmp = b.guMcqCount - a.guMcqCount;
-      else if (sortCol === "remaining") cmp = b.remaining - a.remaining;
-      else if (sortCol === "approved") cmp = b.approved - a.approved;
-      else if (sortCol === "partial") cmp = b.partial - a.partial;
-      else if (sortCol === "similar") cmp = b.similar - a.similar;
+      if (sortCol === "identifier") cmp = a.identifier.localeCompare(b.identifier);
+      else if (sortCol === "name") cmp = a.sopName.localeCompare(b.sopName);
+      else if (sortCol === "dept") cmp = a.department.localeCompare(b.department);
+      else if (sortCol === "lang") cmp = a.langCode.localeCompare(b.langCode);
+      else if (sortCol === "questions" || sortCol === "totalMcqs") cmp = a.totalMcqs - b.totalMcqs;
+      else if (sortCol === "enMcqCount") cmp = a.enMcqCount - b.enMcqCount;
+      else if (sortCol === "guMcqCount") cmp = a.guMcqCount - b.guMcqCount;
+      else if (sortCol === "remaining") cmp = a.remaining - b.remaining;
+      else if (sortCol === "approved") cmp = a.approved - b.approved;
+      else if (sortCol === "partial") cmp = a.partial - b.partial;
+      else if (sortCol === "similar") cmp = a.similar - b.similar;
       else if (sortCol === "lastUpdated" || sortCol === "date") {
-        cmp = (Date.parse(b.lastUpdated ?? "") || 0) - (Date.parse(a.lastUpdated ?? "") || 0);
+        cmp = (Date.parse(a.lastUpdated ?? "") || 0) - (Date.parse(b.lastUpdated ?? "") || 0);
       } else cmp = a.identifier.localeCompare(b.identifier);
       return sortDir === "desc" ? -cmp : cmp;
     });

@@ -32,6 +32,9 @@ export interface ComplianceFinding {
   mismatchExplanation: string;
   sopTextSnippet: string;
   guidelineRequirement: string;
+  clauseText?: string;
+  guidelineSourceLine?: string;
+  guidelineLineNumber?: string;
   suggestedAction: string;
   suggestedText: string;
   impactAnalysis?: string;

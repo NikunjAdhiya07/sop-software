@@ -101,6 +101,7 @@ export async function POST(request: NextRequest) {
           isScanned: ocr.isScanned,
           ocrStatus: "completed" as const,
           rawText: ocr.text.slice(0, 200_000),
+          pageCount: ocr.pageCount || 1,
           clauses,
           guidelineType,
           category,

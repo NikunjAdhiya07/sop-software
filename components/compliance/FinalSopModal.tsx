@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X,
   Download,
@@ -8,9 +8,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   FileText,
-  ChevronDown,
-  ChevronUp,
-  Info,
+  RefreshCw,
+  ThumbsUp,
 } from 'lucide-react';
 
 export interface SopFix {
@@ -29,86 +28,50 @@ interface FinalSopModalProps {
   sopName?: string;
   department?: string;
   fixes: SopFix[];
+  /** Actionable fixes not yet accepted or implemented */
+  pendingApprovalCount?: number;
+  onApproveAll?: () => Promise<void>;
+  onRerunCompliance?: () => void;
+  rerunning?: boolean;
 }
 
-interface SectionGroup {
-  sectionKey: string;
-  fixes: (SopFix & { index: number })[];
+function parseFilename(cd: string | null, fallback: string): string {
+  if (!cd) return fallback;
+  const quoted = cd.match(/filename="([^"]+)"/i);
+  if (quoted?.[1]) return quoted[1];
+  return fallback;
 }
 
-function groupBySection(fixes: SopFix[]): SectionGroup[] {
-  const map = new Map<string, (SopFix & { index: number })[]>();
-  fixes.forEach((fix, i) => {
-    const key = fix.section?.trim() || 'General';
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push({ ...fix, index: i });
+const HIGHLIGHT_COLORS = [
+  { bg: 'rgba(253, 224, 71, 0.55)', outline: '#f59e0b' },
+  { bg: 'rgba(167, 243, 208, 0.55)', outline: '#10b981' },
+  { bg: 'rgba(191, 219, 254, 0.55)', outline: '#3b82f6' },
+  { bg: 'rgba(254, 205, 211, 0.55)', outline: '#f43f5e' },
+];
+
+function highlightChangedTexts(container: HTMLElement, replacementTexts: string[]) {
+  const needles = replacementTexts
+    .map((t) => t.replace(/\s+/g, ' ').trim().slice(0, 80).toLowerCase())
+    .filter(Boolean);
+  if (!needles.length) return;
+
+  const els = container.querySelectorAll<HTMLElement>('p, span');
+  let scrollTarget: HTMLElement | null = null;
+
+  els.forEach((el) => {
+    if ((el.children?.length ?? 0) > 5) return;
+    const text = (el.textContent ?? '').replace(/\s+/g, ' ').toLowerCase();
+    const idx = needles.findIndex((needle) => text.includes(needle));
+    if (idx >= 0) {
+      const color = HIGHLIGHT_COLORS[idx % HIGHLIGHT_COLORS.length];
+      el.style.backgroundColor = color.bg;
+      el.style.outline = `2px solid ${color.outline}`;
+      el.style.borderRadius = '2px';
+      if (!scrollTarget) scrollTarget = el;
+    }
   });
-  return Array.from(map.entries()).map(([sectionKey, fixes]) => ({ sectionKey, fixes }));
-}
 
-function DiffBlock({ original, replacement }: { original: string; replacement: string }) {
-  return (
-    <div className="space-y-2">
-      {/* Removed */}
-      <div className="rounded-lg border border-rose-200 bg-rose-50/70 p-3">
-        <p className="text-[10px] font-black text-rose-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full bg-rose-400" />
-          Remove
-        </p>
-        <p className="text-sm text-rose-800 leading-relaxed font-mono whitespace-pre-wrap line-through decoration-rose-400/70">
-          {original || <span className="italic text-rose-400">No current text identified</span>}
-        </p>
-      </div>
-      {/* Added */}
-      <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-3">
-        <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-          Replace with
-        </p>
-        <p className="text-sm text-emerald-900 leading-relaxed font-mono whitespace-pre-wrap">
-          {replacement}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function SectionCard({ group }: { group: SectionGroup }) {
-  const [open, setOpen] = useState(true);
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors"
-      >
-        <div className="flex items-center gap-3">
-          <FileText className="h-4 w-4 text-purple-600 shrink-0" />
-          <span className="text-sm font-bold text-gray-800">{group.sectionKey}</span>
-          <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 text-[10px] font-black border border-purple-200">
-            {group.fixes.length} change{group.fixes.length !== 1 ? 's' : ''}
-          </span>
-        </div>
-        {open ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
-      </button>
-
-      {open && (
-        <div className="px-4 py-4 space-y-5 divide-y divide-gray-100">
-          {group.fixes.map((fix, i) => (
-            <div key={i} className={i > 0 ? 'pt-5' : ''}>
-              <div className="mb-3">
-                <span className="inline-block px-2 py-0.5 rounded bg-blue-50 border border-blue-200 text-[10px] font-black text-blue-700 uppercase tracking-wide mr-2">
-                  § {fix.clauseNumber}
-                </span>
-                <span className="text-xs font-semibold text-gray-700">{fix.clauseTitle}</span>
-              </div>
-              <DiffBlock original={fix.originalText} replacement={fix.replacementText} />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  if (scrollTarget) scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 export default function FinalSopModal({
@@ -119,28 +82,43 @@ export default function FinalSopModal({
   sopName,
   department,
   fixes,
+  pendingApprovalCount = 0,
+  onApproveAll,
+  onRerunCompliance,
+  rerunning = false,
 }: FinalSopModalProps) {
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
+  const [status, setStatus] = useState<
+    'idle' | 'needs-approval' | 'loading' | 'rendering' | 'done' | 'error'
+  >('idle');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [exportResult, setExportResult] = useState<{ applied: number; skipped: number } | null>(null);
+  const [docxBlob, setDocxBlob] = useState<Blob | null>(null);
+  const [filename, setFilename] = useState(`FINAL_SOP_${sopIdentifier ?? 'SOP'}.docx`);
+  const [approvingAll, setApprovingAll] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const runIdRef = useRef(0);
 
-  const sections = useMemo(() => groupBySection(fixes), [fixes]);
+  const fixCount = fixes.length;
+  const needsApproval = fixCount === 0 && pendingApprovalCount > 0;
 
-  if (!isOpen) return null;
-
-  const handleExport = async () => {
+  const fetchAndRender = useCallback(async () => {
     if (!sopId || !fixes.length) return;
-    setExporting(true);
-    setExportError(null);
-    setExportResult(null);
 
+    const runId = ++runIdRef.current;
+    setStatus('loading');
+    setErrorMsg(null);
+    setExportResult(null);
+    setDocxBlob(null);
+
+    let blob: Blob;
+    let fname = `FINAL_SOP_${sopIdentifier ?? 'SOP'}.docx`;
     try {
       const res = await fetch('/api/compliance/final-sop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sopId,
-          fixes: fixes.map(f => ({
+          fixes: fixes.map((f) => ({
             originalText: f.originalText,
             replacementText: f.replacementText,
             clauseTitle: f.clauseTitle,
@@ -151,120 +129,248 @@ export default function FinalSopModal({
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setExportError(data.error ?? 'Export failed.');
-        return;
+        throw new Error(data.error ?? 'Failed to generate final SOP.');
       }
 
       const applied = Number(res.headers.get('X-Applied-Count') ?? fixes.length);
       const skipped = Number(res.headers.get('X-Skipped-Count') ?? 0);
       setExportResult({ applied, skipped });
+      fname = parseFilename(res.headers.get('Content-Disposition'), fname);
+      blob = await res.blob();
+    } catch (e: unknown) {
+      if (runId !== runIdRef.current) return;
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to load final SOP.');
+      setStatus('error');
+      return;
+    }
 
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const disp = res.headers.get('Content-Disposition') ?? '';
-      const match = disp.match(/filename="([^"]+)"/);
-      a.download = match?.[1] ?? `FINAL_SOP_${sopIdentifier ?? 'SOP'}.docx`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+    if (runId !== runIdRef.current) return;
+    setFilename(fname);
+    setDocxBlob(blob);
+    setStatus('rendering');
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    if (runId !== runIdRef.current) return;
+
+    const container = containerRef.current;
+    if (!container) {
+      setErrorMsg('Preview container not available.');
+      setStatus('error');
+      return;
+    }
+
+    try {
+      const { renderAsync } = await import('docx-preview');
+      container.innerHTML = '';
+      await renderAsync(blob, container, undefined, {
+        className: 'docx',
+        ignoreWidth: false,
+        ignoreHeight: true,
+        ignoreFonts: false,
+        breakPages: true,
+        useBase64URL: true,
+        renderHeaders: true,
+        renderFooters: true,
+      });
+      highlightChangedTexts(
+        container,
+        fixes.map((f) => f.replacementText),
+      );
+    } catch (e: unknown) {
+      if (runId !== runIdRef.current) return;
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to render document preview.');
+      setStatus('error');
+      return;
+    }
+
+    if (runId !== runIdRef.current) return;
+    setStatus('done');
+  }, [sopId, fixes, sopIdentifier]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      runIdRef.current++;
+      setStatus('idle');
+      setDocxBlob(null);
+      setErrorMsg(null);
+      setApprovingAll(false);
+      if (containerRef.current) containerRef.current.innerHTML = '';
+      return;
+    }
+
+    if (needsApproval) {
+      setStatus('needs-approval');
+      setDocxBlob(null);
+      setErrorMsg(null);
+      if (containerRef.current) containerRef.current.innerHTML = '';
+      return;
+    }
+
+    if (!fixes.length) {
+      setStatus('error');
+      setErrorMsg('No approved fixes to include in the final SOP.');
+      return;
+    }
+
+    void fetchAndRender();
+  }, [isOpen, fetchAndRender, needsApproval, fixes.length]);
+
+  const handleApproveAll = async () => {
+    if (!onApproveAll) return;
+    setApprovingAll(true);
+    setErrorMsg(null);
+    try {
+      await onApproveAll();
+    } catch (e: unknown) {
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to approve fixes.');
+      setStatus('error');
     } finally {
-      setExporting(false);
+      setApprovingAll(false);
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden">
+  const handleDownload = () => {
+    if (!docxBlob) return;
+    const url = URL.createObjectURL(docxBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
-        {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
-          <div className="flex items-start gap-3">
-            <div className="p-2 rounded-lg bg-purple-50 border border-purple-200 shrink-0">
-              <FileText className="h-5 w-5 text-purple-700" />
+  const summaryLine = useMemo(() => {
+    if (needsApproval) {
+      return `${pendingApprovalCount} proposed change${pendingApprovalCount !== 1 ? 's' : ''} awaiting approval`;
+    }
+    if (!exportResult) {
+      return `${fixCount} approved change${fixCount !== 1 ? 's' : ''} applied to this preview (highlighted)`;
+    }
+    return `${exportResult.applied} approved fix${exportResult.applied !== 1 ? 'es' : ''} applied${exportResult.skipped > 0 ? `, ${exportResult.skipped} skipped` : ''} — changed sections highlighted`;
+  }, [exportResult, fixCount, needsApproval, pendingApprovalCount]);
+
+  if (!isOpen) return null;
+
+  const isLoading = status === 'loading' || status === 'rendering';
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[92vh] flex flex-col overflow-hidden">
+        <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 shrink-0">
+              <FileText className="h-4 w-4 text-emerald-700" />
             </div>
             <div>
-              <h2 className="text-sm font-black text-gray-900 uppercase tracking-wide">
-                Final SOP — All Proposed Changes
-              </h2>
+              <h2 className="text-sm font-black text-gray-900 uppercase tracking-wide">Final SOP Preview</h2>
               <p className="text-xs text-gray-500 mt-0.5">
                 {sopIdentifier}{sopName ? ` — ${sopName}` : ''}{department ? ` · ${department}` : ''}
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100">
+          <button type="button" onClick={onClose} className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100">
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Summary bar */}
-        <div className="shrink-0 flex items-center gap-4 px-6 py-3 bg-purple-50 border-b border-purple-100">
-          <div className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-rose-400" />
-            <span className="text-[11px] font-bold text-gray-700">Red = current text to be removed</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-            <span className="text-[11px] font-bold text-gray-700">Green = replacement text</span>
-          </div>
-          <div className="ml-auto flex items-center gap-1.5 text-[11px] font-bold text-purple-700">
-            <Info className="h-3.5 w-3.5" />
-            {fixes.length} fix{fixes.length !== 1 ? 'es' : ''} across {sections.length} section{sections.length !== 1 ? 's' : ''}
-          </div>
-        </div>
-
-        {/* Scrollable diff body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4 bg-gray-50">
-          {sections.length === 0 ? (
-            <div className="text-center py-16 text-gray-400">
-              <FileText className="h-10 w-10 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">No actionable fixes found in this report.</p>
-            </div>
+        <div
+          className={`shrink-0 px-6 py-2 border-b flex items-center gap-2 flex-wrap ${
+            needsApproval ? 'bg-amber-50 border-amber-100' : 'bg-emerald-50 border-emerald-100'
+          }`}
+        >
+          {needsApproval ? (
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
           ) : (
-            sections.map((group) => (
-              <SectionCard key={group.sectionKey} group={group} />
-            ))
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
           )}
+          <span
+            className={`text-[11px] font-semibold ${needsApproval ? 'text-amber-900' : 'text-emerald-900'}`}
+          >
+            {summaryLine}
+          </span>
         </div>
 
-        {/* Footer */}
+        <div className="flex-1 overflow-y-auto bg-gray-300 relative">
+          {status === 'needs-approval' && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 p-8 bg-gray-50">
+              <ThumbsUp className="h-10 w-10 text-amber-500" />
+              <div className="text-center max-w-md space-y-2">
+                <p className="text-sm font-bold text-gray-900">No fixes approved yet</p>
+                <p className="text-sm text-gray-600">
+                  The final SOP only includes changes you have approved. Review the findings below, or approve all{' '}
+                  {pendingApprovalCount} proposed change{pendingApprovalCount !== 1 ? 's' : ''} to generate the preview.
+                </p>
+              </div>
+              {onApproveAll && (
+                <button
+                  type="button"
+                  onClick={() => void handleApproveAll()}
+                  disabled={approvingAll}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 shadow-md shadow-emerald-200"
+                >
+                  {approvingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <ThumbsUp className="h-4 w-4" />}
+                  {approvingAll ? 'Approving…' : `Approve all ${pendingApprovalCount} fix${pendingApprovalCount !== 1 ? 'es' : ''}`}
+                </button>
+              )}
+            </div>
+          )}
+          {isLoading && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-gray-100/90">
+              <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
+              <p className="text-sm font-semibold text-gray-600">
+                {status === 'loading' ? 'Applying approved fixes and building final SOP…' : 'Rendering preview…'}
+              </p>
+            </div>
+          )}
+          {status === 'error' && !needsApproval && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 p-8 bg-gray-50">
+              <AlertTriangle className="h-8 w-8 text-rose-400" />
+              <p className="text-sm text-rose-700 text-center max-w-md font-medium">{errorMsg}</p>
+              {fixes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void fetchAndRender()}
+                  className="mt-2 px-4 py-2 rounded-lg text-sm font-bold bg-emerald-600 text-white hover:bg-emerald-700"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          <div ref={containerRef} className="min-h-full" />
+        </div>
+
         <div className="shrink-0 px-6 py-4 border-t border-gray-200 bg-white flex items-center justify-between gap-3 flex-wrap">
           <button
+            type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 border border-gray-200 bg-white hover:bg-gray-50"
+            className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 border border-gray-200 hover:bg-gray-50"
           >
             Close
           </button>
 
-          <div className="flex items-center gap-3">
-            {/* Export result */}
-            {exportResult && !exportError && (
-              <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                {exportResult.applied} fix{exportResult.applied !== 1 ? 'es' : ''} applied
-                {exportResult.skipped > 0 && `, ${exportResult.skipped} skipped`}
-              </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {onRerunCompliance && (
+              <button
+                type="button"
+                onClick={onRerunCompliance}
+                disabled={rerunning || isLoading || needsApproval || !docxBlob}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold border border-purple-300 bg-purple-50 text-purple-800 hover:bg-purple-100 disabled:opacity-50"
+              >
+                {rerunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {rerunning ? 'Starting…' : 'Rerun Compliance'}
+              </button>
             )}
-            {exportError && (
-              <div className="flex items-center gap-1.5 text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-1.5 max-w-xs">
-                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                {exportError}
-              </div>
-            )}
-
             <button
-              onClick={handleExport}
-              disabled={exporting || !sopId || !fixes.length}
-              className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-black bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 shadow-md shadow-purple-200 transition-all"
+              type="button"
+              onClick={handleDownload}
+              disabled={!docxBlob || isLoading || needsApproval}
+              className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 shadow-md shadow-emerald-200 transition-all"
             >
-              {exporting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              {exporting ? 'Generating DOCX…' : 'Export Final SOP'}
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              Download Final SOP
             </button>
           </div>
         </div>

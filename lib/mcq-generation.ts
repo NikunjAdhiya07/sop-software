@@ -31,6 +31,7 @@ import {
   scoreSopRecordForMcq,
 } from "@/lib/mcq-source-text";
 import { isDuplicateMcqQuestionForGeneration } from "@/lib/similarity";
+import { buildAnnexureSupplement } from "@/lib/compliance-sop-content";
 import {
   ensureSingleMcqGenJob,
   healOrphanedMcqGenJobIfNeeded,
@@ -1249,6 +1250,20 @@ export async function runMcqGeneration(
   }
 
   const reps = representativesByLanguage(sops);
+
+  // Fold in any linked annexure files (extracted live, same as compliance audits
+  // do via buildAnnexureSupplement) so clause parsing + prompts see annexure
+  // content. This mutates only the in-memory record — sop.content is never
+  // persisted back to SOP, so the canonical document/viewer/compliance-without-
+  // annexures paths are unaffected; only mcqClauseCache (keyed by content hash)
+  // gets rebuilt to match, exactly like a normal content change would.
+  const annexureSupplement = await buildAnnexureSupplement(sops);
+  if (annexureSupplement) {
+    for (const [, sop] of reps) {
+      sop.content = `${sop.content ?? ""}\n\n${annexureSupplement}`;
+    }
+  }
+
   let eligible = [...reps.entries()].filter(([, sop]) => scoreSopRecordForMcq(sop) >= 50);
   if (languageScope) {
     eligible = eligible.filter(([lang]) => lang === languageScope);

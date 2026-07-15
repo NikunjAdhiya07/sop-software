@@ -13,6 +13,10 @@ export interface IComplianceFindingDetail {
   mismatchExplanation: string;
   sopTextSnippet: string;
   guidelineRequirement: string;
+  clauseText?: string;
+  guidelineSourceLine?: string;
+  guidelineLineNumber?: string;
+  guidelineSearchPhrase?: string;
   suggestedAction: string;
   suggestedText: string;
   impactAnalysis?: string;
@@ -149,6 +153,24 @@ export interface IComplianceReport extends Document {
   /** Per-guideline content hashes — enables skipping unchanged guidelines on re-runs */
   guidelineHashes?: Map<string, string>;
 
+  /**
+   * Whether linked annexure file text was included when this report was analyzed
+   * against guidelines. `undefined` on legacy reports = unknown / not checked.
+   * Prefer `annexureStatus` for display.
+   */
+  annexuresChecked?: boolean;
+  /**
+   * - none: no annexure connected to the SOP
+   * - checked: connected annexures were included in the guideline audit (done)
+   * - not-checked: annexures are connected but this run did not audit them
+   * - linked-unread: annexures are connected but text could not be extracted
+   */
+  annexureStatus?: "none" | "checked" | "not-checked" | "linked-unread";
+  linkedAnnexureCount?: number;
+  annexureChars?: number;
+  annexuresIncluded?: { label: string; fileName: string; chars: number }[];
+  annexuresSkipped?: { label: string; fileName: string; reason: string }[];
+
   findings: IComplianceFindingDetail[];
 
   analyzedAt: Date;
@@ -214,6 +236,10 @@ const ComplianceReportSchema = new Schema<IComplianceReport>(
         mismatchExplanation: { type: String },
         sopTextSnippet: { type: String },
         guidelineRequirement: { type: String },
+        clauseText: { type: String },
+        guidelineSourceLine: { type: String },
+        guidelineLineNumber: { type: String },
+        guidelineSearchPhrase: { type: String },
         suggestedAction: { type: String },
         suggestedText: { type: String },
         impactAnalysis: { type: String },
@@ -255,6 +281,35 @@ const ComplianceReportSchema = new Schema<IComplianceReport>(
     sopContentHash: { type: String, trim: true },
     guidelineSetHash: { type: String, trim: true },
     guidelineHashes: { type: Map, of: String },
+
+    annexuresChecked: { type: Boolean, index: true },
+    annexureStatus: {
+      type: String,
+      enum: ["none", "checked", "not-checked", "linked-unread"],
+      index: true,
+    },
+    linkedAnnexureCount: { type: Number, default: 0 },
+    annexureChars: { type: Number, default: 0 },
+    annexuresIncluded: {
+      type: [
+        {
+          label: { type: String, default: "" },
+          fileName: { type: String, default: "" },
+          chars: { type: Number, default: 0 },
+        },
+      ],
+      default: undefined,
+    },
+    annexuresSkipped: {
+      type: [
+        {
+          label: { type: String, default: "" },
+          fileName: { type: String, default: "" },
+          reason: { type: String, default: "" },
+        },
+      ],
+      default: undefined,
+    },
 
     criticalCount: { type: Number, default: 0 },
     majorCount: { type: Number, default: 0 },

@@ -11,16 +11,16 @@ import { getContentType } from "@/lib/extractContent";
 /** No-op kept for call-site compatibility; circuit breaker has been removed. */
 export function resetBunnyUploadCircuit() {}
 
-export async function saveUploadedFile(
-  file: File,
+export async function saveUploadedBuffer(
+  buffer: Buffer,
+  fileName: string,
   department: string,
   identifier: string,
   language = "English",
 ): Promise<{ fileUrl: string; checksum: string; fileSize: number }> {
-  const buffer = Buffer.from(await file.arrayBuffer());
   const checksum = createHash("sha256").update(buffer).digest("hex");
-  const filename = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const fileType = detectFileType(file.name) ?? "docx";
+  const filename = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const fileType = detectFileType(fileName) ?? "docx";
 
   if (!isBunnyConfigured()) {
     throw new Error(
@@ -35,16 +35,23 @@ export async function saveUploadedFile(
     language,
     fileType,
     filename,
-    contentType: getContentType(file.name),
+    contentType: getContentType(fileName),
   });
-  // Stamp the URL with a hash of the bytes so a re-upload (same CDN path,
-  // overwritten content) gets a distinct URL — busting CDN / viewer / browser
-  // caches so the preview always reflects the most recent upload.
   return {
     fileUrl: appendCdnCacheBuster(fileUrl, checksum),
     checksum,
     fileSize: buffer.length,
   };
+}
+
+export async function saveUploadedFile(
+  file: File,
+  department: string,
+  identifier: string,
+  language = "English",
+): Promise<{ fileUrl: string; checksum: string; fileSize: number }> {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  return saveUploadedBuffer(buffer, file.name, department, identifier, language);
 }
 
 export function detectFileType(filename: string): "pdf" | "docx" | null {

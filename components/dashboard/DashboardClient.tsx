@@ -528,6 +528,7 @@ export function DashboardClient() {
         onExport={handleExport}
         canMutate={userCanMutate}
         isAdmin={userIsAdmin}
+        onFilesImportComplete={refresh}
         onOpenGuidelinesWizard={() => {
           setGuidelinesWizardPreset(null);
           setGuidelinesWizardOpen(true);

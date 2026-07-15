@@ -7,6 +7,13 @@ import SOP, { type ISOP } from '@/models/SOP';
 import MatrixSOPAssignment from '@/models/MatrixSOPAssignment';
 import { getGroupedRegistryRows } from '@/lib/dashboardRegistrySource';
 import { normalizeDepartment } from '@/lib/department-colors';
+import { baseIdentifierFromIdentifier } from '@/lib/sop-utils';
+import {
+  buildExcelToDbBaseLookup,
+  expandSopIdentifierVariants,
+  resolveExcelCodeToDbBase,
+} from '@/lib/sopIdentifierNormalize';
+import { invalidateLmsServerPrefix } from '@/lib/lmsCache';
 import {
   resolveSopFamilyNames,
   isPlaceholderSopName,
@@ -72,6 +79,21 @@ function monthNameToNum(name: string): number | null {
     (m) => m && m.toLowerCase() === String(name || '').trim().toLowerCase(),
   );
   return idx > 0 ? idx : null;
+}
+
+/** sopMonthMap values may list several months: "January,March,February". */
+function parseScheduleMonthNumbers(monthVal: string): number[] {
+  return String(monthVal || '')
+    .split(',')
+    .map((part) => monthNameToNum(part.trim()))
+    .filter((m): m is number => m !== null);
+}
+
+function primaryScheduleFromMonthVal(monthVal: string): { month: number; monthName: string } | null {
+  const months = parseScheduleMonthNumbers(monthVal);
+  if (!months.length) return null;
+  const month = Math.min(...months);
+  return { month, monthName: MONTH_NAMES[month] || String(monthVal).trim() };
 }
 
 export function inferTrainingType(rawSymbol: string): 'induction' | 'training' {
@@ -255,6 +277,7 @@ declare global {
 
 export function invalidateEmployeeAssignmentsCache(): void {
   global.__employeeAssignmentsCache = undefined;
+  invalidateLmsServerPrefix('lms:admin:');
 }
 
 export function getEmployeeAssignmentsMap(
@@ -281,13 +304,60 @@ export function getEmployeeAssignmentsMap(
   return promise;
 }
 
+/** Match training-matrix overview: only registry SOP codes, not junk Excel symbols. */
+async function buildMatrixAssignableCodeFilter(): Promise<(raw: string) => boolean> {
+  const registry = await getGroupedRegistryRows();
+  const active = registry.filter((r) => !r.isObsolete);
+  const dbBaseSet = new Set<string>();
+  for (const row of active) {
+    const base = baseIdentifierFromIdentifier(row.identifier);
+    if (base) dbBaseSet.add(base);
+  }
+
+  const obsoleteBaseSet = new Set<string>();
+  for (const row of registry.filter((r) => r.isObsolete)) {
+    const base = baseIdentifierFromIdentifier(row.identifier);
+    if (base) obsoleteBaseSet.add(base.toUpperCase());
+    for (const variant of expandSopIdentifierVariants(row.identifier)) {
+      const stripped = stripVersion(variant);
+      if (stripped) obsoleteBaseSet.add(stripped);
+    }
+  }
+
+  const excelToDbBase = buildExcelToDbBaseLookup(active);
+  return (raw: string): boolean => {
+    const stripped = stripVersion(raw);
+    if (!stripped || isInvalidSopAssignmentCode(stripped)) return false;
+    if (obsoleteBaseSet.has(stripped)) return false;
+    const dbBase = resolveExcelCodeToDbBase(stripped, excelToDbBase);
+    if (dbBase) {
+      if (obsoleteBaseSet.has(dbBase)) return false;
+      return dbBaseSet.has(dbBase);
+    }
+    return dbBaseSet.has(stripped);
+  };
+}
+
 async function computeEmployeeAssignmentsMap(): Promise<Map<string, EmployeeSopAssignment[]>> {
   // empKey → (sopCode → kept assignment). One entry per SOP per employee.
   const byEmp = new Map<string, Map<string, EmployeeSopAssignment>>();
-  const lookup = await buildSopLookup();
+  const [lookup, isMatrixAssignableCode, records, uploads] = await Promise.all([
+    buildSopLookup(),
+    buildMatrixAssignableCodeFilter(),
+    TrainingMatrixRecord.find({ status: { $ne: 'na' } })
+      .select('employeeName department sopCode sopName month monthName year rawSymbol status')
+      .sort({ year: -1, month: 1, sopCode: 1 })
+      .lean(),
+    TrainingMatrixUpload.find({
+      fileType: 'main',
+      'snapshot.employees': { $exists: true },
+    })
+      .sort({ uploadedAt: -1 })
+      .lean(),
+  ]);
 
   const add = (department: string, name: string, assignment: EmployeeSopAssignment) => {
-    if (isInvalidSopAssignmentCode(assignment.sopCode)) return;
+    if (!isMatrixAssignableCode(assignment.sopCode)) return;
     const key = empKey(department, name);
     if (!byEmp.has(key)) byEmp.set(key, new Map());
     const bySop = byEmp.get(key)!;
@@ -296,43 +366,6 @@ async function computeEmployeeAssignmentsMap(): Promise<Map<string, EmployeeSopA
     // Keep the earliest-scheduled occurrence of each SOP.
     if (!existing || isEarlier(assignment, existing)) bySop.set(dedupeKey, assignment);
   };
-
-  const records = await TrainingMatrixRecord.find({ status: { $ne: 'na' } })
-    .select('employeeName department sopCode sopName month monthName year rawSymbol status')
-    .sort({ year: -1, month: 1, sopCode: 1 })
-    .lean();
-
-  for (const r of records as Array<{
-    employeeName: string;
-    department: string;
-    sopCode: string;
-    sopName?: string;
-    month: number;
-    monthName: string;
-    year: number;
-    rawSymbol?: string;
-    status?: string;
-  }>) {
-    const name = String(r.employeeName || '').trim();
-    const department = String(r.department || '').trim();
-    if (!name || !department || !r.sopCode || isInvalidSopAssignmentCode(r.sopCode)) continue;
-    add(department, name, {
-      sopCode: r.sopCode,
-      sopName: r.sopName,
-      month: r.month,
-      monthName: r.monthName || MONTH_NAMES[r.month] || `Month ${r.month}`,
-      year: r.year,
-      trainingType: inferTrainingType(r.rawSymbol || ''),
-      status: r.status,
-    });
-  }
-
-  const uploads = await TrainingMatrixUpload.find({
-    fileType: 'main',
-    'snapshot.employees': { $exists: true },
-  })
-    .sort({ uploadedAt: -1 })
-    .lean();
 
   const latestByDept = new Map<string, {
     year: number;
@@ -356,24 +389,30 @@ async function computeEmployeeAssignmentsMap(): Promise<Map<string, EmployeeSopA
     latestByDept.set(dept, { year: up.year ?? new Date().getFullYear(), snapshot: up.snapshot });
   }
 
+  // Employees in the latest Excel snapshot use that list (scheduled = due + completed).
+  const snapshotEmployeeKeysByDept = new Map<string, Set<string>>();
+
   for (const [dept, { year, snapshot }] of latestByDept) {
     const baseToSchedule = new Map<string, { month: number; monthName: string; rawCode: string }>();
     for (const [rawKey, monthName] of Object.entries(snapshot.sopMonthMap || {})) {
-      if (isInvalidSopAssignmentCode(rawKey)) continue;
+      if (!isMatrixAssignableCode(rawKey)) continue;
       const base = stripVersion(rawKey);
-      if (isInvalidSopAssignmentCode(base)) continue;
-      const month = monthNameToNum(monthName);
-      if (!base || !month) continue;
+      const primary = primaryScheduleFromMonthVal(monthName);
+      if (!base || !primary) continue;
       if (!baseToSchedule.has(base)) {
-        baseToSchedule.set(base, { month, monthName, rawCode: rawKey });
+        baseToSchedule.set(base, { month: primary.month, monthName: primary.monthName, rawCode: rawKey });
       }
     }
 
     for (const emp of snapshot.employees || []) {
       const name = String(emp.name || '').trim();
       if (!name || !emp.training) continue;
-      for (const [sopCode, assigned] of Object.entries(emp.training)) {
-        if (!assigned || isInvalidSopAssignmentCode(sopCode)) continue;
+      const empLookupKey = empKey(dept, name);
+      if (!snapshotEmployeeKeysByDept.has(dept)) snapshotEmployeeKeysByDept.set(dept, new Set());
+      snapshotEmployeeKeysByDept.get(dept)!.add(empLookupKey);
+
+      for (const [sopCode] of Object.entries(emp.training)) {
+        if (!isMatrixAssignableCode(sopCode)) continue;
         const sched = baseToSchedule.get(stripVersion(sopCode));
         if (!sched) continue;
         add(dept, name, {
@@ -387,12 +426,39 @@ async function computeEmployeeAssignmentsMap(): Promise<Map<string, EmployeeSopA
     }
   }
 
+  for (const r of records as Array<{
+    employeeName: string;
+    department: string;
+    sopCode: string;
+    sopName?: string;
+    month: number;
+    monthName: string;
+    year: number;
+    rawSymbol?: string;
+    status?: string;
+  }>) {
+    const name = String(r.employeeName || '').trim();
+    const department = String(r.department || '').trim();
+    if (!name || !department || !r.sopCode || !isMatrixAssignableCode(r.sopCode)) continue;
+    const empLookupKey = empKey(department, name);
+    if (snapshotEmployeeKeysByDept.get(department)?.has(empLookupKey)) continue;
+    add(department, name, {
+      sopCode: r.sopCode,
+      sopName: r.sopName,
+      month: r.month,
+      monthName: r.monthName || MONTH_NAMES[r.month] || `Month ${r.month}`,
+      year: r.year,
+      trainingType: inferTrainingType(r.rawSymbol || ''),
+      status: r.status,
+    });
+  }
+
   // Materialize the deduped per-employee maps into the array shape callers expect.
   const map = new Map<string, EmployeeSopAssignment[]>();
   for (const [key, bySop] of byEmp) {
     map.set(
       key,
-      [...bySop.values()].filter((a) => !isInvalidSopAssignmentCode(a.sopCode)),
+      [...bySop.values()].filter((a) => isMatrixAssignableCode(a.sopCode)),
     );
   }
 
@@ -505,12 +571,12 @@ async function mergeInductionAssignments(
 
     for (const [rawKey, monthName] of Object.entries(snap.snapshot.sopMonthMap)) {
       if (isInvalidSopAssignmentCode(rawKey)) continue;
-      const month = monthNameToNum(monthName);
-      if (!month) continue;
+      const primary = primaryScheduleFromMonthVal(monthName);
+      if (!primary) continue;
       add(emp.department, emp.name, {
         sopCode: rawKey,
-        month,
-        monthName,
+        month: primary.month,
+        monthName: primary.monthName,
         year: snap.year,
         trainingType: 'induction',
       });

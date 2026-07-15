@@ -68,7 +68,7 @@ async function buildSopScheduleByDept(): Promise<Map<string, Map<string, number[
       const base = stripVersion(rawKey);
       const months = String(monthVal)
         .split(',')
-        .map((s) => monthNameToNum(s))
+        .map((s) => monthNameToNum(s.trim()))
         .filter((m): m is number => m !== null);
       if (!base || months.length === 0) continue;
       sched.set(base, [...new Set(months)]);

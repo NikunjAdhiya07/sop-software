@@ -58,7 +58,7 @@ interface ProgressRecord {
   completedAt?: string;
 }
 
-type FilterTab = 'all' | 'in_progress' | 'completed' | 'overdue' | 'not_started';
+type FilterTab = 'all' | 'in_progress' | 'completed' | 'overdue' | 'due' | 'upcoming';
 type SortKey = 'sopCode' | 'sopName' | 'department' | 'type' | 'status' | 'due' | 'progress';
 type SortDir = 'asc' | 'desc';
 interface SortState { key: SortKey; dir: SortDir; }
@@ -96,11 +96,20 @@ function isOverdue(a: SopAssignment): boolean {
   return assignmentMonthStart(a) < currentMonthStart();
 }
 
+type ScheduleStatus = 'upcoming' | 'due' | 'overdue';
+
+function scheduleStatus(a: SopAssignment): ScheduleStatus {
+  if (isFutureScheduled(a)) return 'upcoming';
+  if (isOverdue(a)) return 'overdue';
+  return 'due';
+}
+
 function statusLabel(s: FilterTab): string {
   if (s === 'in_progress')  return 'In Progress';
   if (s === 'completed')    return 'Completed';
   if (s === 'overdue')      return 'Overdue';
-  if (s === 'not_started')  return 'Not Started';
+  if (s === 'due')          return 'Due';
+  if (s === 'upcoming')     return 'Upcoming';
   return 'All';
 }
 
@@ -127,14 +136,13 @@ function displayTrainingName(a: SopAssignment): { english: string; gujarati?: st
 
 function statusSortRank(
   status: ProgressRecord['status'],
-  overdue: boolean,
-  scheduled: boolean,
+  schedule: ScheduleStatus,
 ): number {
   if (status === 'completed') return 0;
   if (status === 'in_progress') return 1;
-  if (overdue) return 2;
-  if (scheduled) return 4;
-  return 3;
+  if (schedule === 'overdue') return 2;
+  if (schedule === 'due') return 3;
+  return 4;
 }
 
 function nextSort(prev: SortState, key: SortKey): SortState {
@@ -158,26 +166,28 @@ function ProgressBar({ pct, color = 'purple' }: { pct: number; color?: string })
 
 function StatusIcon({
   status,
-  overdue,
-  scheduled,
+  schedule,
 }: {
   status: ProgressRecord['status'];
-  overdue: boolean;
-  scheduled: boolean;
+  schedule: ScheduleStatus;
 }) {
   return (
     <div className={`mx-auto flex h-8 w-8 items-center justify-center rounded-lg ${
-      status === 'completed' ? 'bg-green-50' : overdue ? 'bg-red-50' : scheduled ? 'bg-sky-50' : 'bg-purple-50'
+      status === 'completed' ? 'bg-green-50'
+        : status === 'in_progress' ? 'bg-purple-50'
+        : schedule === 'overdue' ? 'bg-red-50'
+        : schedule === 'due' ? 'bg-amber-50'
+        : 'bg-sky-50'
     }`}>
       {status === 'completed'
         ? <CheckCircle2 className="h-4 w-4 text-green-600" />
         : status === 'in_progress'
         ? <PlayCircle className="h-4 w-4 text-purple-600" />
-        : overdue
+        : schedule === 'overdue'
         ? <AlertCircle className="h-4 w-4 text-red-500" />
-        : scheduled
-        ? <Clock className="h-4 w-4 text-sky-500" />
-        : <BookOpen className="h-4 w-4 text-purple-400" />}
+        : schedule === 'due'
+        ? <Clock className="h-4 w-4 text-amber-600" />
+        : <Clock className="h-4 w-4 text-sky-500" />}
     </div>
   );
 }
@@ -233,14 +243,13 @@ function DepartmentCell({ department }: { department?: string }) {
 
 function trainingStatusLabel(
   status: ProgressRecord['status'],
-  overdue: boolean,
-  scheduled: boolean,
+  schedule: ScheduleStatus,
 ): string {
   if (status === 'completed') return 'Completed';
   if (status === 'in_progress') return 'In Progress';
-  if (scheduled) return 'Scheduled';
-  if (overdue) return 'Overdue';
-  return 'Not Started';
+  if (schedule === 'upcoming') return 'Upcoming';
+  if (schedule === 'overdue') return 'Overdue';
+  return 'Due';
 }
 
 // ─── Per-SOP resource quick actions ──────────────────────────────────────────
@@ -392,10 +401,8 @@ function TrainingTable({
       const pb = progressMap.get(b.sopCode);
       const sa = pa?.status ?? 'not_started';
       const sb = pb?.status ?? 'not_started';
-      const oa = isOverdue(a) && sa !== 'completed';
-      const ob = isOverdue(b) && sb !== 'completed';
-      const saSched = isFutureScheduled(a) && sa !== 'completed';
-      const sbSched = isFutureScheduled(b) && sb !== 'completed';
+      const schedA = scheduleStatus(a);
+      const schedB = scheduleStatus(b);
 
       let cmp = 0;
       switch (sort.key) {
@@ -412,7 +419,7 @@ function TrainingTable({
           cmp = a.trainingType.localeCompare(b.trainingType);
           break;
         case 'status':
-          cmp = statusSortRank(sa, oa, saSched) - statusSortRank(sb, ob, sbSched);
+          cmp = statusSortRank(sa, schedA) - statusSortRank(sb, schedB);
           break;
         case 'due':
           cmp = a.year !== b.year ? a.year - b.year : a.month - b.month;
@@ -449,8 +456,7 @@ function TrainingTable({
               const progress = progressMap.get(assignment.sopCode);
               const pct = progress?.overallPercentage ?? 0;
               const status = progress?.status ?? 'not_started';
-              const scheduled = isFutureScheduled(assignment) && status !== 'completed';
-              const overdue = isOverdue(assignment) && status !== 'completed';
+              const schedule = scheduleStatus(assignment);
               const cert = certMap.get(assignment.sopCode) || certMap.get(stripVersion(assignment.sopCode));
               const showCertificate = status === 'completed' && Boolean(cert);
 
@@ -459,10 +465,17 @@ function TrainingTable({
                   key={`${assignment.sopCode}-${assignment.month}-${assignment.year}`}
                   onMouseEnter={() => onPrefetch?.(assignment.sopCode)}
                   onFocus={() => onPrefetch?.(assignment.sopCode)}
-                  className={`transition hover:bg-gray-50/80 ${overdue ? 'bg-red-50/40' : scheduled ? 'bg-sky-50/30' : ''}`}
+                  className={`transition hover:bg-gray-50/80 ${
+                    status !== 'completed' && status !== 'in_progress'
+                      ? schedule === 'overdue' ? 'bg-red-50/40'
+                        : schedule === 'due' ? 'bg-amber-50/30'
+                        : schedule === 'upcoming' ? 'bg-sky-50/30'
+                        : ''
+                      : ''
+                  }`}
                 >
                   <td className="px-3 py-2.5">
-                    <StatusIcon status={status} overdue={overdue} scheduled={scheduled} />
+                    <StatusIcon status={status} schedule={schedule} />
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs font-bold text-gray-700">
                     {assignment.sopCode}
@@ -498,28 +511,33 @@ function TrainingTable({
                         ? 'bg-green-100 text-green-700'
                         : status === 'in_progress'
                         ? 'bg-purple-100 text-purple-700'
-                        : scheduled
+                        : schedule === 'upcoming'
                         ? 'bg-sky-100 text-sky-700'
-                        : overdue
+                        : schedule === 'due'
+                        ? 'bg-amber-100 text-amber-800'
+                        : schedule === 'overdue'
                         ? 'bg-red-100 text-red-700'
                         : 'bg-gray-100 text-gray-600'
                     }`}>
-                      {trainingStatusLabel(status, overdue, scheduled)}
+                      {trainingStatusLabel(status, schedule)}
                     </span>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5">
-                    <span className={`text-xs ${scheduled ? 'text-gray-400' : 'text-gray-500'}`}>
+                    <span className={`text-xs ${schedule === 'upcoming' ? 'text-gray-400' : 'text-gray-500'}`}>
                       {assignment.monthName.slice(0, 3)} {assignment.year}
                     </span>
-                    {scheduled && (
-                      <p className="text-[10px] font-medium text-sky-600">Upcoming</p>
-                    )}
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-2">
                       <ProgressBar
                         pct={pct}
-                        color={status === 'completed' ? 'green' : overdue ? 'amber' : scheduled ? 'sky' : 'purple'}
+                        color={
+                          status === 'completed' ? 'green'
+                            : schedule === 'overdue' ? 'amber'
+                            : schedule === 'due' ? 'amber'
+                            : schedule === 'upcoming' ? 'sky'
+                            : 'purple'
+                        }
                       />
                       <span className="w-9 shrink-0 text-right text-[11px] font-semibold text-gray-400">{pct}%</span>
                     </div>
@@ -852,8 +870,18 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
     let list = assignments;
     if (filter === 'in_progress')  list = list.filter((a) => progressMap.get(a.sopCode)?.status === 'in_progress');
     if (filter === 'completed')    list = list.filter((a) => progressMap.get(a.sopCode)?.status === 'completed');
-    if (filter === 'not_started')  list = list.filter((a) => isDue(a) && (!progressMap.get(a.sopCode) || progressMap.get(a.sopCode)?.status === 'not_started'));
-    if (filter === 'overdue')      list = list.filter((a) => isOverdue(a) && progressMap.get(a.sopCode)?.status !== 'completed');
+    if (filter === 'due')          list = list.filter((a) => {
+      const st = progressMap.get(a.sopCode)?.status;
+      return scheduleStatus(a) === 'due' && st !== 'completed' && st !== 'in_progress';
+    });
+    if (filter === 'upcoming')     list = list.filter((a) => {
+      const st = progressMap.get(a.sopCode)?.status;
+      return scheduleStatus(a) === 'upcoming' && st !== 'completed';
+    });
+    if (filter === 'overdue')      list = list.filter((a) => {
+      const st = progressMap.get(a.sopCode)?.status;
+      return scheduleStatus(a) === 'overdue' && st !== 'completed';
+    });
     if (search.trim()) {
       const term = search.trim().toLowerCase();
       list = list.filter((a) => {
@@ -874,8 +902,18 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
     all:         assignments.length,
     in_progress: assignments.filter((a) => progressMap.get(a.sopCode)?.status === 'in_progress').length,
     completed:   assignments.filter((a) => progressMap.get(a.sopCode)?.status === 'completed').length,
-    not_started: assignments.filter((a) => isDue(a) && (!progressMap.get(a.sopCode) || progressMap.get(a.sopCode)?.status === 'not_started')).length,
-    overdue:     assignments.filter((a) => isOverdue(a) && progressMap.get(a.sopCode)?.status !== 'completed').length,
+    due:         assignments.filter((a) => {
+      const st = progressMap.get(a.sopCode)?.status;
+      return scheduleStatus(a) === 'due' && st !== 'completed' && st !== 'in_progress';
+    }).length,
+    upcoming:    assignments.filter((a) => {
+      const st = progressMap.get(a.sopCode)?.status;
+      return scheduleStatus(a) === 'upcoming' && st !== 'completed';
+    }).length,
+    overdue:     assignments.filter((a) => {
+      const st = progressMap.get(a.sopCode)?.status;
+      return scheduleStatus(a) === 'overdue' && st !== 'completed';
+    }).length,
   }), [assignments, progressMap]);
 
   return (
@@ -976,7 +1014,7 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
 
               {/* Filter tabs */}
               <div className="mb-4 flex flex-wrap gap-1.5">
-                {(['all', 'in_progress', 'not_started', 'completed', 'overdue'] as FilterTab[]).map((tab) => (
+                {(['all', 'in_progress', 'due', 'upcoming', 'completed', 'overdue'] as FilterTab[]).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setFilter(tab)}
@@ -986,6 +1024,10 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
                           ? 'bg-red-600 text-white'
                           : tab === 'completed'
                           ? 'bg-green-600 text-white'
+                          : tab === 'due'
+                          ? 'bg-amber-600 text-white'
+                          : tab === 'upcoming'
+                          ? 'bg-sky-600 text-white'
                           : 'bg-purple-600 text-white'
                         : 'border border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
                     }`}

@@ -91,6 +91,7 @@ export function describeFilters(filters: SOPFilters): FilterBreadcrumb {
 
   if (filters.versionStatus) push(`Versions ${STATUS_LABELS[filters.versionStatus] ?? filters.versionStatus}`);
   if (filters.versionDate) push(`Version Dates ${STATUS_LABELS[filters.versionDate] ?? filters.versionDate}`);
+  if (filters.annexureStatus) push(`Annexures ${STATUS_LABELS[filters.annexureStatus] ?? filters.annexureStatus}`);
 
   if (filters.dualLanguage) push("Dual Language");
   if (filters.absoluteSop) push("Absolute SOP");

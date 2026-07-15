@@ -48,16 +48,22 @@ export async function checkCodexCliHealth(): Promise<CodexCliHealth> {
   const model = getMcqCodexModel();
   try {
     const { stdout, code } = await runCodex(["doctor", "--json"], undefined, 30_000);
-    if (code !== 0) {
+
+    let report: DoctorReport;
+    try {
+      report = JSON.parse(stdout) as DoctorReport;
+    } catch {
       return {
         ok: false,
         model,
         loggedIn: false,
-        error: `codex doctor exited with code ${code}`,
+        error:
+          code !== 0
+            ? `codex doctor exited with code ${code}`
+            : "codex doctor returned invalid JSON",
       };
     }
 
-    const report = JSON.parse(stdout) as DoctorReport;
     const auth = report.checks?.["auth.credentials"];
     const install = report.checks?.installation;
     const authOk = auth?.status === "ok";
@@ -125,6 +131,14 @@ function unregisterCliSubprocess(
   else unregisterMcqSubprocess(runKey);
 }
 
+function codexSpawnEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  if (!env.TERM || env.TERM === "dumb") env.TERM = "xterm-256color";
+  delete env.NO_COLOR;
+  delete env.FORCE_COLOR;
+  return env;
+}
+
 function runCodex(
   args: string[],
   stdin?: string,
@@ -134,6 +148,7 @@ function runCodex(
     const proc = spawn("codex", args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
+      env: codexSpawnEnv(),
     });
 
     let stdout = "";
@@ -208,7 +223,7 @@ async function runCodexExecPrompt(
       "-",
     ];
 
-    const proc = spawn("codex", args, { stdio: ["pipe", "pipe", "pipe"], shell: true });
+    const proc = spawn("codex", args, { stdio: ["pipe", "pipe", "pipe"], shell: true, env: codexSpawnEnv() });
 
     if (options?.runKey) registerCliSubprocess(options.runKey, proc, options.subprocessScope);
 

@@ -149,6 +149,152 @@ export function buildImpactAnalysis(
   return points.join("\n");
 }
 
+type ImpactFindingInput = Parameters<typeof buildImpactAnalysis>[0];
+
+/** Short prose impact summary — main points only, not bullet list. */
+export function buildImpactSummary(finding: ImpactFindingInput, requirement: string): string {
+  const severity = finding.issueSeverity ?? "minor";
+  const riskOutcome =
+    severity === "critical"
+      ? "critical audit findings, product-quality risk, or regulatory action"
+      : severity === "major"
+        ? "major audit findings, batch failure, or mandatory CAPA"
+        : "documentation gaps during internal or regulatory inspection";
+
+  const docName = finding.pdfName || finding.folderName || finding.guidelineName || "the guideline";
+  const clauseRef = finding.clauseNumber
+    ? `clause ${finding.clauseNumber}${finding.clauseTitle ? ` (${finding.clauseTitle})` : ""}`
+    : "the cited requirement";
+
+  const gap = finding.mismatchExplanation?.trim();
+  const sopSection = finding.sopSectionAffected?.trim();
+  const hasSopSection = sopSection && sopSection !== "Not Found" && sopSection !== "N/A";
+
+  const sentences: string[] = [];
+
+  if (gap) {
+    sentences.push(truncateAtSentenceBoundary(gap.replace(/\s+/g, " "), 280));
+  } else if (requirement) {
+    sentences.push(
+      `The SOP does not adequately address ${docName} ${clauseRef}: "${truncateAtSentenceBoundary(requirement.replace(/\s+/g, " "), 180)}".`,
+    );
+  } else {
+    sentences.push(`The SOP does not adequately address ${docName} ${clauseRef}.`);
+  }
+
+  sentences.push(`This may result in ${riskOutcome}.`);
+
+  if (hasSopSection) {
+    sentences.push(`Priority focus: SOP section ${sopSection}.`);
+  }
+
+  return sentences.join(" ");
+}
+
+type ComplianceFindingInput = {
+  sopSectionAffected?: string;
+  sopTextSnippet?: string;
+  evidenceFound?: string;
+  mismatchExplanation?: string;
+  highlightedIssue?: string;
+  matchConfidence?: number;
+  guidelineName?: string;
+  folderName?: string;
+  pdfName?: string;
+  clauseNumber?: string;
+  clauseTitle?: string;
+  guidelineReference?: string;
+  pageNumber?: string;
+  paragraphNumber?: string;
+};
+
+/** Short prose summary explaining why a finding is compliant. */
+export function buildComplianceSummary(
+  finding: ComplianceFindingInput,
+  requirement: string,
+): string {
+  const docName = finding.pdfName || finding.folderName || finding.guidelineName || "the guideline";
+  const clauseRef = finding.clauseNumber
+    ? `clause ${finding.clauseNumber}${finding.clauseTitle ? ` (${finding.clauseTitle})` : ""}`
+    : "the cited requirement";
+
+  const evidence = finding.evidenceFound?.trim() || finding.sopTextSnippet?.trim();
+  const rationale = finding.mismatchExplanation?.trim() || finding.highlightedIssue?.trim();
+  const sopSection = finding.sopSectionAffected?.trim();
+  const hasSopSection = sopSection && sopSection !== "Not Found" && sopSection !== "N/A";
+
+  const sentences: string[] = [];
+
+  if (requirement) {
+    sentences.push(
+      `The SOP adequately addresses ${docName} ${clauseRef}: "${truncateAtSentenceBoundary(requirement.replace(/\s+/g, " "), 220)}".`,
+    );
+  } else {
+    sentences.push(`The SOP adequately addresses ${docName} ${clauseRef}.`);
+  }
+
+  if (evidence) {
+    sentences.push(
+      `Supporting SOP text: "${truncateAtSentenceBoundary(evidence.replace(/\s+/g, " "), 280)}".`,
+    );
+  }
+
+  if (rationale && !/does not|missing|fail|gap|inadequate|non-?compliant/i.test(rationale)) {
+    sentences.push(truncateAtSentenceBoundary(rationale.replace(/\s+/g, " "), 240));
+  }
+
+  if (hasSopSection) {
+    sentences.push(`Addressed in SOP section ${sopSection}.`);
+  }
+
+  if (finding.matchConfidence != null && finding.matchConfidence >= 60) {
+    sentences.push(`Match confidence: ${finding.matchConfidence}%.`);
+  }
+
+  return sentences.join(" ");
+}
+
+/** Bullet points for compliant findings — requirement, evidence, and traceability. */
+export function buildComplianceRationale(
+  finding: ComplianceFindingInput,
+  requirement: string,
+): string {
+  const docName = finding.pdfName || finding.folderName || finding.guidelineName || "the guideline";
+  const clauseLabel = finding.clauseNumber
+    ? `§ ${finding.clauseNumber}${finding.clauseTitle ? ` — "${finding.clauseTitle}"` : ""}`
+    : "";
+
+  const baseRef = finding.guidelineReference && finding.guidelineReference !== `${finding.guidelineName} Clause ${finding.clauseNumber}`
+    ? finding.guidelineReference
+    : [docName, clauseLabel].filter(Boolean).join(", ");
+
+  const locationParts: string[] = [];
+  if (finding.pageNumber?.trim()) locationParts.push(`p. ${finding.pageNumber.trim()}`);
+  if (finding.paragraphNumber?.trim()) locationParts.push(`¶ ${finding.paragraphNumber.trim()}`);
+
+  const preciseSource = locationParts.length > 0
+    ? `${baseRef} (${locationParts.join(", ")})`
+    : baseRef;
+
+  const evidence = finding.evidenceFound?.trim() || finding.sopTextSnippet?.trim();
+  const sopSection = finding.sopSectionAffected?.trim();
+
+  const points: string[] = [];
+  points.push(`Source: ${preciseSource}`);
+  if (requirement) {
+    points.push(`Requirement met: "${truncateAtSentenceBoundary(requirement, 500)}"`);
+  }
+  if (evidence) {
+    points.push(`SOP evidence: "${truncateAtSentenceBoundary(evidence, 500)}"`);
+  }
+  if (sopSection && sopSection !== "Not Found" && sopSection !== "N/A") {
+    points.push(`Covered in: SOP ${sopSection}`);
+  }
+  points.push("Requirement is explicitly demonstrated in the SOP text.");
+
+  return points.join("\n");
+}
+
 export function calculateCompliancePercentage(
   compliant: number,
   partial: number,

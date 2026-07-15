@@ -171,6 +171,7 @@ PRIMARY MISSION:
 ✅ ONLY structured data
 ✅ Each finding MUST map: Guideline ↔ SOP ↔ Gap
 ✅ Each suggestion MUST fix a specific gap with EXACT text
+✅ Linked ANNEXURES / forms / logs in the SOP context ARE valid evidence for documentation, data tracking, and record-keeping — do NOT raise those gaps when an annexure covers them
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -183,8 +184,8 @@ Department: ${params.department}
 Section: ${params.relevantSectionNumber} - ${params.relevantSectionTitle}
 Content: ${params.relevantSectionContent.substring(0, 1500)}${params.relevantSectionContent.length > 1500 ? '...' : ''}
 
-📚 FULL SOP CONTEXT:
-${params.sopContent.substring(0, 3000)}${params.sopContent.length > 3000 ? '...' : ''}
+📚 FULL SOP CONTEXT (may include linked annexures):
+${params.sopContent}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

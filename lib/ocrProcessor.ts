@@ -1,9 +1,12 @@
 import { PDFParse } from "pdf-parse";
+import { stripGuidelineBoilerplate } from "@/lib/guidelineBoilerplate";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface OCRResult {
   text: string;
+  /** Per-page text (1-based page order), when available from the PDF parser. */
+  pages: string[];
   isScanned: boolean;
   confidence: number;
   pageCount: number;
@@ -31,11 +34,15 @@ export async function processGuidelinePDF(buffer: Buffer): Promise<OCRResult> {
 
   const rawText = result?.text ?? "";
   const pageCount = result?.total ?? 1;
+  const pages = (result?.pages ?? [])
+    .map((p) => normalizeText(p.text ?? ""))
+    .filter((t) => t.length > 0);
   const avgCharsPerPage = rawText.length / Math.max(1, pageCount);
   const isScanned = avgCharsPerPage < 50;
 
   return {
     text: normalizeText(rawText),
+    pages: pages.length > 0 ? pages : [normalizeText(rawText)],
     isScanned,
     confidence: isScanned ? 60 : 100,
     pageCount,
@@ -55,6 +62,7 @@ export function normalizeText(raw: string): string {
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/\bPage\s+\d+\s+of\s+\d+\b/gi, "")
+    .replace(/--\s*\d+\s+of\s+\d+\s*--/gi, "\n")
     .replace(/\b(\d+)\s*\/\s*(\d+)\b/g, (m, a, b) =>
       a.length <= 3 && b.length <= 3 ? "" : m,
     )
@@ -202,7 +210,8 @@ function chunkIntoClauses(text: string, fallbackName: string): GuidelineClause[]
 
   const total = chunks.length;
   return chunks.map((c, i) => {
-    const clauseText = c.trim().slice(0, MAX_CLAUSE_CHARS);
+    const raw = c.trim().slice(0, MAX_CLAUSE_CHARS);
+    const clauseText = stripGuidelineBoilerplate(raw).slice(0, MAX_CLAUSE_CHARS);
     return {
       clauseNumber: String(i + 1),
       clauseTitle: total > 1 ? `${fallbackName} (part ${i + 1} of ${total})` : fallbackName,
@@ -221,7 +230,8 @@ export function extractClauses(normalizedText: string, fallbackName: string): Gu
     for (let i = 0; i < boundaries.length; i++) {
       const b = boundaries[i];
       const end = i + 1 < boundaries.length ? boundaries[i + 1].index : text.length;
-      const clauseText = text.slice(b.index, end).trim().slice(0, MAX_CLAUSE_CHARS);
+      const raw = text.slice(b.index, end).trim().slice(0, MAX_CLAUSE_CHARS);
+      const clauseText = stripGuidelineBoilerplate(raw, b.number).slice(0, MAX_CLAUSE_CHARS);
       // Skip noise boundaries that captured almost no body text.
       if (clauseText.length < 30) continue;
       clauses.push({

@@ -7,6 +7,7 @@ import type {
   TraceabilityMatrixEntry,
 } from "@/lib/complianceEngine";
 import { computeWeightedScoreBreakdown } from "@/lib/complianceClassification";
+import { attachGuidelineSourceFields } from "@/lib/guidelineClauseDisplay";
 import mongoose from "mongoose";
 
 function isObjectId(value?: string): boolean {
@@ -33,6 +34,13 @@ export async function saveComplianceReport(data: {
   sopContentLength?: number;
   processingTimeMs?: number;
   guidelinesUsed?: unknown;
+  /** Annexure evidence folded into the audited SOP text for this run. */
+  annexuresChecked?: boolean;
+  annexureStatus?: "none" | "checked" | "not-checked" | "linked-unread";
+  linkedAnnexureCount?: number;
+  annexureChars?: number;
+  annexuresIncluded?: { label: string; fileName: string; chars: number }[];
+  annexuresSkipped?: { label: string; fileName: string; reason: string }[];
 }) {
   const compliantCount = data.findings.filter((f) => f.complianceLevel === "compliant").length;
   const partialCount = data.findings.filter((f) => f.complianceLevel === "partial").length;
@@ -76,11 +84,22 @@ export async function saveComplianceReport(data: {
     bestPracticeCount,
     clauseCoveragePct: data.clauseCoveragePct ?? data.auditCompleteness?.clauseCoveragePct ?? 0,
     analysisEngineVersion: data.analysisEngineVersion ?? "v5",
+    annexuresChecked:
+      data.annexureStatus === "checked" || data.annexuresChecked === true,
+    annexureStatus:
+      data.annexureStatus ??
+      (data.annexuresChecked === true ? "checked" : "none"),
+    linkedAnnexureCount: data.linkedAnnexureCount ?? 0,
+    annexureChars: data.annexureChars ?? 0,
+    annexuresIncluded: data.annexuresIncluded ?? [],
+    annexuresSkipped: data.annexuresSkipped ?? [],
     scoreBreakdown: breakdown,
     auditCompleteness: data.auditCompleteness,
     traceabilityMatrix: data.traceabilityMatrix ?? [],
     crossSopDependencies: data.crossSopDependencies ?? [],
-    findings: data.findings.map((f) => ({
+    findings: data.findings.map((f) => {
+      const withSource = attachGuidelineSourceFields(f);
+      return {
       guidelineId: isObjectId(f.guidelineId) ? new mongoose.Types.ObjectId(f.guidelineId) : undefined,
       guidelineName: f.guidelineName ?? "",
       folderName: f.folderName ?? "",
@@ -92,7 +111,11 @@ export async function saveComplianceReport(data: {
       sopSectionAffected: f.sopSectionAffected,
       mismatchExplanation: f.mismatchExplanation,
       sopTextSnippet: f.sopTextSnippet,
-      guidelineRequirement: f.guidelineRequirement,
+      guidelineRequirement: withSource.guidelineRequirement ?? f.guidelineRequirement,
+      clauseText: withSource.clauseText ?? f.clauseText ?? "",
+      guidelineSourceLine: withSource.guidelineSourceLine ?? "",
+      guidelineLineNumber: withSource.guidelineLineNumber ?? "",
+      guidelineSearchPhrase: (withSource as { guidelineSearchPhrase?: string }).guidelineSearchPhrase ?? "",
       suggestedAction: f.suggestedAction,
       suggestedText: f.suggestedText,
       impactAnalysis: f.impactAnalysis ?? "",
@@ -115,7 +138,8 @@ export async function saveComplianceReport(data: {
       whyApplies: f.whyApplies ?? "",
       whyEvidenceInsufficient: f.whyEvidenceInsufficient ?? "",
       whyScoreReduced: f.whyScoreReduced ?? "",
-    })),
+    };
+    }),
     analyzedAt: new Date(),
   };
 

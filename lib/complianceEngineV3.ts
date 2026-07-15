@@ -7,6 +7,8 @@ import {
   ComplianceAnalysisCancelledError,
   getComplianceRunSignal,
 } from "@/lib/compliance-run-control";
+import { attachGuidelineSourceFields } from "@/lib/guidelineClauseDisplay";
+import { windowSopContentForAudit } from "@/lib/compliance-sop-content";
 
 export type V3AiOptions = {
   aiModel?: string;
@@ -19,7 +21,7 @@ export type V3AiOptions = {
 };
 
 const V3_COMPLIANCE_SYSTEM =
-  "You are a pharmaceutical GMP compliance auditor. Respond with ONLY one valid JSON object matching the schema described in the user message. No markdown fences or extra text.";
+  "You are a pharmaceutical GMP compliance auditor. The indexed text may include LINKED ANNEXURES (forms, logs, templates) — treat those as evidence for documentation, data tracking, and record-keeping requirements. Respond with ONLY one valid JSON object matching the schema described in the user message. No markdown fences or extra text.";
 
 /**
  * ═══════════════════════════════════════════════════════════════════════
@@ -112,6 +114,9 @@ export interface ComplianceFindingV3 {
   specificGap: string;
   guidelineRequirement: string;
   sopCurrentState: string;
+  evidenceFound?: string;
+  guidelineSourceLine?: string;
+  guidelineLineNumber?: string;
   
   // Actionable suggestions
   suggestedAction: string;
@@ -521,10 +526,8 @@ export async function analyzeClauseWithPrecision(
   // Find most relevant SOP section for this clause
   const relevantSection = findRelevantSection(sopSections, clause);
   
-  // Truncate for AI
-  const truncatedContent = sopContent.length > 6000
-    ? sopContent.substring(0, 6000) + '... [truncated]'
-    : sopContent;
+  // Truncate for AI — keep linked annexure blocks inside the window when present
+  const truncatedContent = windowSopContentForAudit(sopContent, 8000);
   
   // Generate structured prompt
   const prompt = generateCompliancePrompt({
@@ -685,7 +688,7 @@ export async function analyzeClauseWithPrecision(
       complianceLevel = 'not-applicable';
     }
     
-    return {
+    return attachGuidelineSourceFields({
       findingId: sanitized.findingId || findingId,
       guidelineId: sanitized.guidelineId || clause.guidelineId,
       guidelineName: sanitized.guidelineName || clause.guidelineName,
@@ -703,7 +706,7 @@ export async function analyzeClauseWithPrecision(
       issueType: normalizeIssueType(sanitized.issueType),
       issueSeverity: normalizeIssueSeverity(sanitized.issueSeverity),
       specificGap: sanitized.specificGap || 'Analysis required',
-      guidelineRequirement: sanitized.guidelineRequirement || clause.clauseText.substring(0, 200),
+      guidelineRequirement: sanitized.guidelineRequirement || '',
       sopCurrentState: sanitized.sopCurrentState || 'Not determined',
       suggestedAction: sanitized.suggestedAction || 'Review required',
       suggestedText: sanitized.suggestedText || 'Review and update this section to address the guideline requirement.',
@@ -712,13 +715,14 @@ export async function analyzeClauseWithPrecision(
       analyzedAt: new Date(),
       aiModelUsed: modelLabel,
       analysisMethod: 'ai-semantic',
-    };
+      evidenceFound: sanitized.sopTextSnippet || sanitized.sopCurrentState || '',
+    });
   } catch (error) {
     if (error instanceof ComplianceAnalysisCancelledError) throw error;
     console.error(`AI analysis failed for clause ${clause.clauseNumber}:`, error);
     
     // Return unable-to-determine instead of false non-compliant
-    return {
+    return attachGuidelineSourceFields({
       findingId,
       guidelineId: clause.guidelineId,
       guidelineName: clause.guidelineName,
@@ -736,7 +740,7 @@ export async function analyzeClauseWithPrecision(
       issueType: 'not-applicable',
       issueSeverity: 'informational',
       specificGap: `AI analysis failed: ${(error as Error).message}`,
-      guidelineRequirement: clause.clauseText.substring(0, 200),
+      guidelineRequirement: '',
       sopCurrentState: 'Unable to determine',
       suggestedAction: 'Manual review required',
       suggestedText: 'Manual review required - AI analysis was unable to generate suggested text.',
@@ -745,7 +749,7 @@ export async function analyzeClauseWithPrecision(
       analyzedAt: new Date(),
       aiModelUsed: modelLabel,
       analysisMethod: 'ai-semantic',
-    };
+    });
   }
 }
 

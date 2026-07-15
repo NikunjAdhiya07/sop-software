@@ -39,6 +39,7 @@ import {
   isOfficePreviewAvailable,
 } from "@/lib/file-urls";
 import { docxRequiredForLang, formatUploaded, pdfRequiredForLang } from "@/lib/sop-utils";
+import { annexureRomanFromLabel } from "@/lib/sop-annexure-requirements";
 import { displaySopCode, displaySopTitle } from "@/lib/sop-display";
 import { describeFilters } from "@/lib/filter-breadcrumb";
 import { useDashboardStore } from "@/lib/store/dashboard-store";
@@ -208,9 +209,16 @@ function BrandlessVideoPlayer({ url }: { url: string }) {
     let raf = 0;
     let stopped = false;
     let lastT = 0;
+    let sampledOnce = false;
     const tick = (t: number) => {
       if (stopped) return;
       raf = requestAnimationFrame(tick);
+      // Skip the costly drawImage/getImageData when there's nothing to gain:
+      // the tab is hidden, or the video is paused and already sampled once.
+      // The preview modal has no backdrop and leaves the dashboard interactive
+      // behind it, so an idle sampling loop here shows up as dashboard lag.
+      if (document.hidden) return;
+      if (v.paused && sampledOnce) return;
       if (t - lastT < 250 || !v.videoWidth || v.readyState < 2) return;
       lastT = t;
       const sw = 160;
@@ -236,6 +244,7 @@ function BrandlessVideoPlayer({ url }: { url: string }) {
           n += 1;
         }
         if (n) {
+          sampledOnce = true;
           setBgColor(
             `rgb(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(
               b / n,
@@ -731,7 +740,7 @@ export function SOPRegistryTable({
       : <ArrowDown className="h-3 w-3 text-purple-600 ml-0.5 inline" />;
   };
 
-  const thBase = "sticky top-0 z-20 bg-gray-100 px-1 py-0.5 align-top text-[9px] font-bold text-gray-600 uppercase tracking-wide whitespace-normal wrap-break-word overflow-hidden";
+  const thBase = "bg-gray-100 px-1 py-0.5 align-top text-[9px] font-bold text-gray-600 uppercase tracking-wide whitespace-normal wrap-break-word overflow-hidden";
   const selBase = "w-full min-w-0 text-[8px] p-px border border-gray-300 rounded bg-white focus:outline-none focus:border-purple-500 cursor-pointer leading-tight";
   const sortBtn = "flex w-full min-w-0 items-center gap-0.5 rounded px-0.5 py-1 text-left font-bold uppercase tracking-wide text-gray-600 hover:bg-purple-50/80 hover:text-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-400";
 
@@ -907,23 +916,24 @@ export function SOPRegistryTable({
             <colgroup>
               <col style={{ width: "1.5%" }} />
               <col style={{ width: "2%" }} />
-              <col style={{ width: "7.5%" }} />
-              <col style={{ width: "2.5%" }} />
-              <col style={{ width: canMutate ? "13%" : "15%" }} />
-              <col style={{ width: "3.5%" }} />
-              <col style={{ width: "5%" }} />
-              <col style={{ width: canMutate ? "15.5%" : "16.5%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "3.5%" }} />
-              <col style={{ width: "8.5%" }} />
               <col style={{ width: "7%" }} />
+              <col style={{ width: "2.5%" }} />
+              <col style={{ width: canMutate ? "12%" : "14%" }} />
+              <col style={{ width: "3.5%" }} />
+              <col style={{ width: "4.5%" }} />
+              <col style={{ width: canMutate ? "19%" : "20%" }} />
+              <col style={{ width: "3.5%" }} />
+              <col style={{ width: "3.5%" }} />
+              <col style={{ width: "7.5%" }} />
+              <col style={{ width: "5%" }} />
+              <col style={{ width: "6.5%" }} />
+              <col style={{ width: "6%" }} />
               <col style={{ width: "6%" }} />
               <col style={{ width: "6.5%" }} />
-              <col style={{ width: "7%" }} />
               {canMutate && <col style={{ width: "3.5%" }} />}
             </colgroup>
             <thead className="bg-gray-100 border-b border-gray-300">
-              <tr>
+              <tr className="sticky top-0 z-20 bg-gray-100">
                 <th className={`${thBase} text-center`} />
                 <th className={`${thBase} text-center`} title="Serial number">SR</th>
                 <th className={thBase}>
@@ -955,14 +965,14 @@ export function SOPRegistryTable({
                     Location <SortIcon field="location" />
                   </button>
                 </th>
-                <th className={thBase} title={isArchiveView ? "Archived (superseded) revisions per language" : "Prior revisions (DOCX/PDF) per language"}>
+                <th className={`${thBase} text-center`} title={isArchiveView ? "Archived (superseded) revisions per language" : "Prior revisions (DOCX/PDF) per language"}>
                   <button type="button" className={sortBtn} onClick={() => onSort("priorVersions")}>
                     {isArchiveView ? "Archived Versions" : "Prior Versions"} <SortIcon field="priorVersions" />
                   </button>
                 </th>
-                <th className={thBase}>
-                  <div className="flex flex-col gap-px min-w-0">
-                    <button type="button" className={sortBtn} onClick={() => onSort("department")}>
+                <th className={`${thBase} text-center`}>
+                  <div className="flex flex-col items-center gap-px min-w-0">
+                    <button type="button" className={`${sortBtn} justify-center`} onClick={() => onSort("department")}>
                       Dept <SortIcon field="department" />
                     </button>
                     <select
@@ -1007,6 +1017,9 @@ export function SOPRegistryTable({
                       <option value="No PDF">No PDF</option>
                     </select>
                   </div>
+                </th>
+                <th className={thBase} title="Required annexures from SOP (green = present, red = missing)">
+                  Annexure
                 </th>
                 <th className={thBase}>
                   <div className="flex flex-col gap-px">
@@ -1070,13 +1083,13 @@ export function SOPRegistryTable({
             <tbody className="text-[10px] text-gray-700">
               {loading ? (
                 <tr>
-                  <td colSpan={canMutate ? 16 : 15} className="py-12 text-center text-slate-400">
+                  <td colSpan={canMutate ? 17 : 16} className="py-12 text-center text-slate-400">
                     <Loader2 className="mx-auto h-6 w-6 animate-spin" />
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td colSpan={canMutate ? 16 : 15} className="py-12 text-center text-gray-500">
+                  <td colSpan={canMutate ? 17 : 16} className="py-12 text-center text-gray-500">
                     <div className="flex flex-col items-center gap-1">
                       <FileText className="h-5 w-5 text-gray-300" />
                       <p className="text-xs">
@@ -1254,14 +1267,16 @@ const SOPRow = memo(function SOPRow({
         </td>
 
         {/* Prior Versions (or archived revisions in the archive view) */}
-        <td className={`${registryTdBase} px-0.5`}>
-          <PriorVersionsCell sop={sop} archiveView={isArchiveView} />
+        <td className={`${registryTdBase} overflow-hidden px-0.5`}>
+          <div className="min-w-0 max-w-full overflow-hidden">
+            <PriorVersionsCell sop={sop} archiveView={isArchiveView} />
+          </div>
         </td>
 
         {/* Department */}
-        <td className={`${registryTdBase} text-gray-700`}>
+        <td className={`${registryTdBase} text-center text-gray-700`}>
           <span
-            className="line-clamp-2 text-[10px] font-semibold leading-snug text-gray-700 wrap-break-word"
+            className="mx-auto block max-w-full truncate text-[9px] font-semibold leading-tight"
             title={sop.department}
           >
             {sop.department}
@@ -1285,6 +1300,11 @@ const SOPRow = memo(function SOPRow({
         {/* Files */}
         <td className={`${registryTdBase} text-center`}>
           <FilesCell sop={sop} />
+        </td>
+
+        {/* Annexure */}
+        <td className={`${registryTdBase} text-center`}>
+          <AnnexureCell sop={sop} />
         </td>
 
         {/* Video */}
@@ -1380,7 +1400,7 @@ const SOPRow = memo(function SOPRow({
       {/* Expanded detail row */}
       {expanded && (
         <tr className="bg-gray-50 border-b border-gray-200">
-          <td colSpan={canMutate ? 16 : 15} className="px-4 py-3">
+          <td colSpan={canMutate ? 17 : 16} className="px-4 py-3">
             <SOPDetailPanel
               sop={sop}
               expiryNode={expiryNode}
@@ -1659,6 +1679,95 @@ function SOPDetailPanel({
   );
 }
 
+/* ─── Annexure cell ─────────────────────────────────────────────────── */
+function AnnexureCell({ sop }: { sop: RegistrySOP }) {
+  const annexures = sop.annexures ?? [];
+  const required = sop.requiredAnnexures ?? [];
+
+  const byRoman = new Map<string, RegistrySOP["annexures"][number]>();
+  for (const a of annexures) {
+    const roman = annexureRomanFromLabel(a.label) ?? (a.fileName ? annexureRomanFromLabel(a.fileName) : undefined);
+    if (roman && !byRoman.has(roman)) byRoman.set(roman, a);
+  }
+
+  if (!required.length) {
+    if (!annexures.length) {
+      return <span className="text-[8px] text-gray-300">—</span>;
+    }
+    return (
+      <div className="mx-auto flex w-full min-w-0 flex-col gap-0.5 text-left">
+        {annexures.map((a) => (
+          <FileLink key={a.filePath} filePath={a.filePath} label={a.label} />
+        ))}
+      </div>
+    );
+  }
+
+  const allPresent = required.every((r) => byRoman.has(r));
+
+  return (
+    <div
+      className="mx-auto flex w-full min-w-0 flex-wrap gap-0.5"
+      title={
+        allPresent
+          ? `All ${required.length} annexure(s) present`
+          : `Missing: ${required.filter((r) => !byRoman.has(r)).map((r) => `Annexure-${r}`).join(", ")}`
+      }
+    >
+      {required.map((roman) => (
+        <AnnexureBadge key={roman} roman={roman} annexure={byRoman.get(roman)} />
+      ))}
+    </div>
+  );
+}
+
+function AnnexureBadge({
+  roman,
+  annexure,
+}: {
+  roman: string;
+  annexure?: { label: string; filePath: string; fileName?: string };
+}) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  if (!annexure) {
+    return (
+      <span
+        className="inline-flex min-w-[14px] items-center justify-center rounded px-0.5 text-[8px] font-bold leading-tight bg-red-100 text-red-700"
+        title={`Annexure-${roman} missing`}
+      >
+        {roman}
+      </span>
+    );
+  }
+
+  const isPdf = /\.pdf$/i.test(annexure.filePath);
+
+  return (
+    <>
+      <button
+        type="button"
+        className="inline-flex min-w-[14px] items-center justify-center rounded px-0.5 text-[8px] font-bold leading-tight bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer"
+        onClick={(e) => {
+          e.stopPropagation();
+          setPreviewOpen(true);
+        }}
+        title={`Preview ${annexure.label}`}
+      >
+        {roman}
+      </button>
+      {previewOpen && (
+        <DocPreviewModal
+          filePath={annexure.filePath}
+          label={annexure.label}
+          isPdf={isPdf}
+          onClose={() => setPreviewOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
 /* ─── Files cell: ENG row + GUJ row ──────────────────────────────────── */
 function FilesCell({ sop }: { sop: RegistrySOP }) {
   const isDual = sop.language === "ENG-GUJ";
@@ -1794,28 +1903,25 @@ function PriorVersionEntry({ pv }: { pv: PriorVersion }) {
   );
 }
 
-/* Version slot width: wide enough for "V12 DOCX / PDF" at 8-9px font */
-const PRIOR_SLOT_W = "6rem";
-const PRIOR_LABEL_W = "2rem";
+/* Version slot: flex-wrap within the cell so content never bleeds into Dept */
+const PRIOR_LABEL_W = "1.5rem";
 
 function PriorLangRow({ pvs, label }: { pvs: PriorVersion[]; label: string }) {
   if (pvs.length === 0) return null;
-  const slots = Array.from({ length: MAX_PRIOR_VERSIONS }, (_, i) => pvs[i] ?? null);
+  const slots = Array.from({ length: MAX_PRIOR_VERSIONS }, (_, i) => pvs[i] ?? null).filter(Boolean) as PriorVersion[];
   return (
-    <div
-      className="grid items-center leading-none"
-      style={{ gridTemplateColumns: `${PRIOR_LABEL_W} repeat(${MAX_PRIOR_VERSIONS}, ${PRIOR_SLOT_W})` }}
-    >
-      <span className="text-[8px] font-bold uppercase text-gray-400 tabular-nums">{label}</span>
-      {slots.map((pv, i) =>
-        pv ? (
-          <div key={`${pv.version}-${pv.language}`} style={{ width: PRIOR_SLOT_W }} className="overflow-hidden">
-            <PriorVersionEntry pv={pv} />
-          </div>
-        ) : (
-          <div key={i} style={{ width: PRIOR_SLOT_W }} />
-        )
-      )}
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 leading-none">
+      <span
+        className="shrink-0 text-[8px] font-bold uppercase text-gray-400 tabular-nums"
+        style={{ width: PRIOR_LABEL_W }}
+      >
+        {label}
+      </span>
+      {slots.map((pv) => (
+        <div key={`${pv.version}-${pv.language}`} className="min-w-0 max-w-full shrink overflow-hidden">
+          <PriorVersionEntry pv={pv} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -1827,10 +1933,15 @@ function sortPriorDesc(pvs: PriorVersion[]): PriorVersion[] {
 function ArchivedLangRow({ pvs, label }: { pvs: PriorVersion[]; label: string }) {
   if (pvs.length === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 leading-none">
-      <span className="text-[8px] font-bold uppercase text-gray-400 tabular-nums">{label}</span>
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 leading-none">
+      <span
+        className="shrink-0 text-[8px] font-bold uppercase text-gray-400 tabular-nums"
+        style={{ width: PRIOR_LABEL_W }}
+      >
+        {label}
+      </span>
       {pvs.map((pv) => (
-        <div key={`${pv.version}-${pv.language}`} className="overflow-hidden">
+        <div key={`${pv.version}-${pv.language}`} className="min-w-0 max-w-full shrink overflow-hidden">
           <PriorVersionEntry pv={pv} />
         </div>
       ))}
@@ -1847,7 +1958,7 @@ function PriorVersionsCell({ sop, archiveView }: { sop: RegistrySOP; archiveView
     }
     if (sop.language === "ENG-GUJ") {
       return (
-        <div className="flex flex-col gap-0.5">
+        <div className="flex min-w-0 max-w-full flex-col gap-0.5 overflow-hidden">
           <ArchivedLangRow pvs={archived.filter((pv) => pv.language === "ENG")} label="ENG" />
           <ArchivedLangRow pvs={archived.filter((pv) => pv.language === "GUJ")} label="GUJ" />
         </div>
@@ -1873,7 +1984,7 @@ function PriorVersionsCell({ sop, archiveView }: { sop: RegistrySOP; archiveView
     const eng = all.filter((pv) => pv.language === "ENG").slice(0, MAX_PRIOR_VERSIONS);
     const guj = all.filter((pv) => pv.language === "GUJ").slice(0, MAX_PRIOR_VERSIONS);
     return (
-      <div className="flex flex-col gap-0.5">
+      <div className="flex min-w-0 max-w-full flex-col gap-0.5 overflow-hidden">
         <PriorLangRow pvs={eng} label="ENG" />
         <PriorLangRow pvs={guj} label="GUJ" />
       </div>
