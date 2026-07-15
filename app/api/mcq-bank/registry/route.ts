@@ -60,6 +60,9 @@ type RegistryEntry = {
   enMcqCount: number;
   guMcqCount: number;
   isObsoleteMcq?: boolean;
+  /** Count of annexure files linked to this SOP family — the MCQ generation
+   *  pipeline folds their extracted text into the prompt when > 0. */
+  annexureCount: number;
 };
 
 interface FamilyBank {
@@ -145,6 +148,7 @@ function toEntry(
   language: string,
   bank: FamilyBank | undefined,
   isObsoleteMcq?: boolean,
+  annexureCount = 0,
 ): RegistryEntry {
   const langCode = language === "GUJ" ? "GUJ" : "ENG";
   // "MCQ Found" means real questions exist in every language the SOP requires —
@@ -180,6 +184,7 @@ function toEntry(
     enMcqCount: bank?.enQ ?? 0,
     guMcqCount: bank?.guQ ?? 0,
     isObsoleteMcq,
+    annexureCount,
   };
 }
 
@@ -230,6 +235,8 @@ async function buildFullRegistry() {
       mcqResolveDept(row.identifier, row.department),
       row.language,
       bank,
+      undefined,
+      row.annexures?.length ?? 0,
     );
   });
 

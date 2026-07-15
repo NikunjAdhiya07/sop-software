@@ -16,6 +16,7 @@ import type {
   RegistrySOP,
   SOPFilters,
 } from "@/lib/types";
+import { collectPresentAnnexureRomans, sortAnnexureRomans } from "@/lib/sop-annexure-requirements";
 import {
   cleanSopDisplayName,
   hasGujaratiScript,
@@ -113,7 +114,7 @@ function resolveLanguage(records: ISOP[]): LanguageCode {
   return "ENG";
 }
 
-function versionNumber(version: string): number {
+export function versionNumber(version: string): number {
   return parseFloat(version) || 0;
 }
 
@@ -244,6 +245,42 @@ function applyRecordFileLinks(
   if (record.fileType === "pdf") entry.pdf = record.fileUrl;
 }
 
+function collectAnnexures(records: ISOP[]) {
+  const annexures: { label: string; filePath: string; fileName?: string }[] = [];
+  const seen = new Set<string>();
+
+  for (const record of records) {
+    for (const doc of record.sopDocuments ?? []) {
+      if (doc.documentKind !== "annexure" || !doc.filePath) continue;
+      const key = doc.checksum || doc.filePath;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      annexures.push({
+        label: doc.annexureLabel || doc.fileName || "Annexure",
+        filePath: doc.filePath,
+        fileName: doc.fileName,
+      });
+    }
+  }
+
+  return annexures;
+}
+
+function collectRequiredAnnexures(records: ISOP[]): string[] {
+  const englishDocx = records.find(
+    (r) => r.fileType === "docx" && r.language === "English" && r.requiredAnnexures?.length,
+  );
+  if (englishDocx?.requiredAnnexures?.length) {
+    return sortAnnexureRomans(englishDocx.requiredAnnexures);
+  }
+  const anyDocx = records.find(
+    (r) => r.fileType === "docx" && r.requiredAnnexures?.length,
+  );
+  return anyDocx?.requiredAnnexures?.length
+    ? sortAnnexureRomans(anyDocx.requiredAnnexures)
+    : [];
+}
+
 function collectVersionFiles(records: ISOP[]) {
   const docx: { en?: string; gu?: string } = {};
   const pdf: { en?: string; gu?: string } = {};
@@ -330,10 +367,15 @@ export function pdfRequiredForLang(sop: RegistrySOP, lang: "en" | "gu"): boolean
   return getFileSlots(sop).pdf.gu;
 }
 
-/** Ensure legacy/cached registry rows have `fileSlots` before UI or filters use them. */
+/** Ensure legacy/cached registry rows have `fileSlots` and `annexures` before UI use. */
 export function normalizeRegistrySop(sop: RegistrySOP): RegistrySOP {
-  if (sop.fileSlots?.docx && sop.fileSlots?.pdf) return sop;
-  return { ...sop, fileSlots: getFileSlots(sop) };
+  const withSlots = sop.fileSlots?.docx && sop.fileSlots?.pdf ? sop : { ...sop, fileSlots: getFileSlots(sop) };
+  if (withSlots.annexures && withSlots.requiredAnnexures !== undefined) return withSlots;
+  return {
+    ...withSlots,
+    annexures: withSlots.annexures ?? [],
+    requiredAnnexures: withSlots.requiredAnnexures ?? [],
+  };
 }
 
 function hasFile(links: { en?: string; gu?: string }, lang: "en" | "gu") {
@@ -637,6 +679,8 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
     const primary = sorted[0] ?? group[0];
     const versionRecords = currentRecords.length ? currentRecords : group;
     const files = collectVersionFiles(versionRecords);
+    const annexures = collectAnnexures(versionRecords);
+    const requiredAnnexures = collectRequiredAnnexures(versionRecords);
     const fileSlots = currentVersionFileSlots(versionRecords);
     const language = resolveLanguage(versionRecords);
     const expiryDate = pickFamilyDate(currentRecords.length ? currentRecords : group, "expiryDate");
@@ -688,6 +732,8 @@ export function groupSOPRecords(records: ISOP[]): RegistrySOP[] {
       isObsolete: group.every((r) => r.isObsolete),
       isNew: differenceInDays(new Date(), new Date(primary.createdAt)) <= 14,
       files,
+      annexures,
+      requiredAnnexures,
       fileSlots,
       media: collectMedia(currentRecords),
       mediaUrls: (() => {
@@ -885,6 +931,19 @@ function priorVersionsComplete(sop: RegistrySOP): boolean {
   return requiredLangs.every((lang) => priorVersionsCompleteForLang(sop, lang as "ENG" | "GUJ"));
 }
 
+function sopRequiresAnnexures(s: RegistrySOP): boolean {
+  return (s.requiredAnnexures?.length ?? 0) > 0;
+}
+
+function annexuresComplete(s: RegistrySOP): boolean {
+  const required = s.requiredAnnexures ?? [];
+  if (!required.length) return true;
+  const present = collectPresentAnnexureRomans(
+    (s.annexures ?? []).map((a) => ({ label: a.label, fileName: a.fileName })),
+  );
+  return required.every((r) => present.has(r));
+}
+
 export function applyFilters(items: RegistrySOP[], filters: SOPFilters): RegistrySOP[] {
   let result = [...items];
 
@@ -961,6 +1020,14 @@ export function applyFilters(items: RegistrySOP[], filters: SOPFilters): Registr
       result = result.filter(isVersionComplete);
     } else {
       result = result.filter((s) => !isVersionComplete(s));
+    }
+  }
+
+  if (filters.annexureStatus === "found" || filters.annexureStatus === "missing") {
+    if (filters.annexureStatus === "found") {
+      result = result.filter((s) => sopRequiresAnnexures(s) && annexuresComplete(s));
+    } else {
+      result = result.filter((s) => sopRequiresAnnexures(s) && !annexuresComplete(s));
     }
   }
 
@@ -1203,6 +1270,7 @@ function buildCapsule(department: string, sops: RegistrySOP[]): DepartmentCapsul
       en: { found: 0, missing: 0 },
       gu: { found: 0, missing: 0 },
     },
+    annexures: { found: 0, missing: 0 },
     videos: {
       available: 0,
       required: sops.length,
@@ -1277,6 +1345,11 @@ function buildCapsule(department: string, sops: RegistrySOP[]): DepartmentCapsul
     if (needsGu(sop)) {
       if (sop.hasVersionDateGu) capsule.versionDate.gu.found++;
       else capsule.versionDate.gu.missing++;
+    }
+
+    if (sopRequiresAnnexures(sop)) {
+      if (annexuresComplete(sop)) capsule.annexures.found++;
+      else capsule.annexures.missing++;
     }
 
     // Found / Not Found are SOP counts (not raw file counts) so each pair sums to
@@ -1364,6 +1437,7 @@ export function parseFiltersFromSearchParams(params: URLSearchParams): SOPFilter
     expiry: params.get("expiry") ?? undefined,
     versionStatus: params.get("versionStatus") ?? undefined,
     versionDate: params.get("versionDate") ?? undefined,
+    annexureStatus: params.get("annexureStatus") ?? undefined,
     dualLanguage: params.get("dualLanguage") === "true",
     absoluteSop: params.get("absoluteSop") === "true",
     obsoleteOnly: params.get("obsoleteOnly") === "true",

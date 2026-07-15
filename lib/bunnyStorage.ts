@@ -384,27 +384,129 @@ export async function searchBunnyStorageForDocx(
 }
 
 /**
+ * Fetch file content from Bunny Storage API (more reliable than CDN for bulk export).
+ */
+export async function fetchBunnyStorageFile(storagePath: string): Promise<Buffer | null> {
+  const config = getConfig();
+  if (!config.storageZone || !config.apiKey) return null;
+
+  const cleanPath = extractBunnyPath(storagePath).split(/[?#]/)[0];
+  const url = `https://${config.storageHostname}/${config.storageZone}/${cleanPath}`;
+  const timeoutMs = bunnyFetchTimeoutMs();
+  const maxAttempts = bunnyFetchMaxAttempts();
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { AccessKey: config.apiKey },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        if ((res.status >= 500 || res.status === 429) && attempt < maxAttempts) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
+        return null;
+      }
+      return Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      if (attempt < maxAttempts && isRetryableFetchError(err)) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      console.error('[BunnyStorage] fetchBunnyStorageFile error:', err);
+      return null;
+    }
+  }
+  return null;
+}
+
+function bunnyFetchTimeoutMs(): number {
+  const raw = String(process.env.BUNNY_UPLOAD_TIMEOUT_MS || process.env.BUNNY_FETCH_TIMEOUT_MS || '').trim();
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 30_000 ? n : 300_000;
+}
+
+function bunnyFetchMaxAttempts(): number {
+  const raw = String(process.env.BUNNY_UPLOAD_MAX_RETRIES || process.env.BUNNY_FETCH_MAX_RETRIES || '').trim();
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 1 ? Math.min(8, n) : 5;
+}
+
+function backoffMs(attempt: number): number {
+  return Math.min(15_000, 1_500 * attempt * attempt) + Math.floor(Math.random() * 800);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isRetryableFetchError(error: unknown): boolean {
+  const code = (error as { cause?: { code?: string }; code?: string; name?: string })?.cause?.code
+    || (error as { code?: string })?.code;
+  const name = (error as { name?: string })?.name || '';
+  const msg = error instanceof Error ? error.message : String(error);
+  const low = msg.toLowerCase();
+  return (
+    code === 'UND_ERR_HEADERS_TIMEOUT' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT' ||
+    code === 'UND_ERR_SOCKET' ||
+    code === 'ECONNRESET' ||
+    code === 'ETIMEDOUT' ||
+    name === 'AbortError' ||
+    name === 'TimeoutError' ||
+    low.includes('timeout') ||
+    low.includes('aborted due to timeout')
+  );
+}
+
+/**
  * Fetch file content from Bunny (CDN URL or bunny:// path).
  * Used by view-docx when the SOP file is stored in Bunny.
  */
 export async function fetchBunnyFile(filePathOrUrl: string): Promise<Buffer | null> {
+  const stripped = (filePathOrUrl || '').trim().split(/[?#]/)[0];
+  if (!stripped) return null;
+
+  // Prefer Storage API for bulk reliability when configured.
+  if (isBunnyPath(stripped)) {
+    const fromStorage = await fetchBunnyStorageFile(stripped);
+    if (fromStorage?.length) return fromStorage;
+  }
+
   let url: string;
-  if (filePathOrUrl.startsWith('http://') || filePathOrUrl.startsWith('https://')) {
-    url = filePathOrUrl;
-  } else if (filePathOrUrl.startsWith('bunny://')) {
-    const path = filePathOrUrl.replace(/^bunny:\/\//, '');
-    url = getBunnyCdnUrl(path);
+  if (stripped.startsWith('http://') || stripped.startsWith('https://')) {
+    url = stripped;
+  } else if (stripped.startsWith('bunny://')) {
+    const storagePath = stripped.replace(/^bunny:\/\//, '');
+    url = getBunnyCdnUrl(storagePath);
   } else {
-    url = getBunnyCdnUrl(filePathOrUrl);
+    url = getBunnyCdnUrl(stripped);
   }
   if (!url) return null;
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-    if (!res.ok) return null;
-    const ab = await res.arrayBuffer();
-    return Buffer.from(ab);
-  } catch (err) {
-    console.error('[BunnyStorage] fetchBunnyFile error:', err);
-    return null;
+
+  const timeoutMs = bunnyFetchTimeoutMs();
+  const maxAttempts = bunnyFetchMaxAttempts();
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) {
+        if ((res.status >= 500 || res.status === 429) && attempt < maxAttempts) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
+        return null;
+      }
+      return Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      if (attempt < maxAttempts && isRetryableFetchError(err)) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      console.error('[BunnyStorage] fetchBunnyFile error:', err);
+      return null;
+    }
   }
+  return null;
 }

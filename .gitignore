@@ -44,3 +44,7 @@ yarn-error.log*
 # uploaded SOP files
 /public/uploads/*
 !/public/uploads/.gitkeep
+
+# local files-folder bulk import drop zone
+/files/**
+!/files/.gitkeep

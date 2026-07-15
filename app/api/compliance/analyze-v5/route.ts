@@ -84,7 +84,9 @@ export async function POST(request: NextRequest) {
     const sopRow = await SOP.findById(sopId).lean();
     if (!sopRow) return NextResponse.json({ success: false, error: "SOP not found" }, { status: 404 });
 
-    const resolved = await resolveComplianceSopContent(sopId);
+    const resolved = await resolveComplianceSopContent(sopId, {
+      includeAnnexures: body.includeAnnexures !== false,
+    });
     if (!resolved) {
       return NextResponse.json(
         {
@@ -99,6 +101,11 @@ export async function POST(request: NextRequest) {
     if (resolved.referencedSupplementChars > 0) {
       console.log(
         `[analyze-v5] ${sop.identifier}: merged ${resolved.referencedSupplementChars} chars from referenced SOPs`,
+      );
+    }
+    if (resolved.annexureSupplementChars > 0) {
+      console.log(
+        `[analyze-v5] ${sop.identifier}: merged ${resolved.annexureSupplementChars} chars from linked annexures`,
       );
     }
 
@@ -224,6 +231,12 @@ export async function POST(request: NextRequest) {
         forceRefresh: Boolean(forceRefresh),
         runEpoch,
         scopedGuidelineIds,
+        annexuresChecked: resolved.annexureStatus === "checked",
+        annexureStatus: resolved.annexureStatus,
+        linkedAnnexureCount: resolved.linkedAnnexureCount,
+        annexureChars: resolved.annexureSupplementChars,
+        annexuresIncluded: resolved.annexuresIncluded,
+        annexuresSkipped: resolved.annexuresSkipped,
       });
 
       await SOP.updateMany(

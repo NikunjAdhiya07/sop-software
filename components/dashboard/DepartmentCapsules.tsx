@@ -22,6 +22,7 @@ function emptyDepartmentCapsule(name: string): DepartmentCapsule {
       pdf: { en: { found: 0, missing: 0 }, gu: { found: 0, missing: 0 } },
     },
     versionDate: zeroLang,
+    annexures: zero,
     videos: { available: 0, required: 0, missing: 0, en: { available: 0, missing: 0 }, gu: { available: 0, missing: 0 } },
     explainerVideos: zero, briefVideos: zero,
     slides: { available: 0, required: 0, missing: 0, en: { available: 0, missing: 0 }, gu: { available: 0, missing: 0 } },
@@ -485,7 +486,7 @@ function LangPairPills({
   );
 
   return (
-    <div className="flex min-h-5.5 w-full items-center justify-between gap-1 px-1 py-0 text-[9px]">
+    <div className="flex min-h-5.5 w-full flex-nowrap items-center justify-between gap-x-1 gap-y-0.5 px-1 py-0 text-[9px]">
       {pair(l1, f1, m1, onF1, onM1)}
       {pair(l2, f2, m2, onF2, onM2)}
     </div>
@@ -504,10 +505,12 @@ function FormatLangPairRow({
   onF2?: () => void; onM2?: () => void;
 }) {
   return (
-    <div className="mt-0.5 flex min-h-5 w-full items-center justify-between gap-1 px-1 py-0 text-[9px]">
-      <span className="inline-block w-7.5 shrink-0 font-medium text-gray-400">{formatLabel}</span>
-      <LangPairPills l1={l1} f1={f1} m1={m1} l2={l2} f2={f2} m2={m2}
-        onF1={onF1} onM1={onM1} onF2={onF2} onM2={onM2} />
+    <div className="mt-0.5 flex min-h-5 w-full items-center gap-1 px-1 py-0 text-[9px]">
+      <span className="inline-block w-6 shrink-0 font-medium text-gray-400">{formatLabel}</span>
+      <div className="min-w-0 flex-1">
+        <LangPairPills l1={l1} f1={f1} m1={m1} l2={l2} f2={f2} m2={m2}
+          onF1={onF1} onM1={onM1} onF2={onF2} onM2={onM2} />
+      </div>
     </div>
   );
 }
@@ -686,6 +689,17 @@ const DepartmentCard = memo(function DepartmentCard({
           onM2={() => f({ versionDate: "missing", language: "GUJ" })}
         />
 
+        {/* Annexures */}
+        <div className="h-1" />
+        <VersionPairRow
+          label="Annexures"
+          found={cap.annexures.found}
+          missing={cap.annexures.missing}
+          onLabelClick={() => f({ annexureStatus: "missing" })}
+          onFoundClick={() => f({ annexureStatus: "found" })}
+          onMissingClick={() => f({ annexureStatus: "missing" })}
+        />
+
         {/* Videos */}
         <div className="h-1" />
         <MetricAvailMiss
@@ -823,6 +837,7 @@ export function DepartmentCapsules({ capsules, onDepartmentAdded, onDepartmentDe
       videoType: undefined,
       versionStatus: undefined,
       versionDate: undefined,
+      annexureStatus: undefined,
       dualLanguage: undefined,
       search: undefined,
       locations: [],

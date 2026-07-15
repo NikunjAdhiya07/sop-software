@@ -442,7 +442,7 @@ export default function EmployeesPage() {
     try {
       const params = new URLSearchParams();
       if (department && department !== 'All') params.set('department', department);
-      const res  = await fetch(`/api/lms/admin/employee-training?${params}`);
+      const res  = await fetch(`/api/lms/admin/employee-training?${params}`, { cache: 'no-store' });
       const json = await res.json();
       const map = new Map<string, TrainingRecord>();
       for (const r of (json.records ?? []) as TrainingRecord[]) {

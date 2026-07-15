@@ -51,6 +51,8 @@ export interface ISOP extends Document {
   isObsolete?: boolean;
   obsoleteAt?: Date;
   obsoleteReason?: string;
+  /** Annexure roman labels required per the SOP ANNEXURES section (e.g. I, II, III). */
+  requiredAnnexures?: string[];
   /** True for records auto-created by the Bunny relink scan (not explicit uploads).
    *  Such records must NOT count toward version completeness. */
   linkedFromBunny?: boolean;
@@ -62,6 +64,10 @@ export interface ISOP extends Document {
     filePath?: string;
     fileType?: string;
     language?: string;
+    documentKind?: "main" | "annexure" | "media";
+    annexureLabel?: string;
+    checksum?: string;
+    parentIdentifier?: string;
   }[];
   mediaLinks?: {
     videos?: { en?: string | string[]; gu?: string | string[] };
@@ -164,6 +170,7 @@ const SOPSchema = new Schema<ISOP>(
     isObsolete: { type: Boolean, default: false },
     obsoleteAt: { type: Date },
     obsoleteReason: { type: String },
+    requiredAnnexures: [{ type: String, trim: true }],
     linkedFromBunny: { type: Boolean, default: false },
     headerDatesValid: { type: Boolean },
     deptManualOverride: { type: Boolean, default: false },
@@ -173,6 +180,10 @@ const SOPSchema = new Schema<ISOP>(
         filePath: String,
         fileType: String,
         language: String,
+        documentKind: { type: String, enum: ["main", "annexure", "media"] },
+        annexureLabel: String,
+        checksum: String,
+        parentIdentifier: String,
       },
     ],
     mediaLinks: {

@@ -5,7 +5,7 @@
 
 // ─── Client cache keys ──────────────────────────────────────────────────────
 
-export const LMS_CACHE_KEY = 'lms-portal-cache-v1';
+export const LMS_CACHE_KEY = 'lms-portal-cache-v3';
 /** Skip network when client cache is younger than this. */
 export const LMS_CLIENT_FRESH_MS = 60_000;
 
@@ -148,8 +148,8 @@ export const lmsServerKeys = {
   certificate: (employeeId: string, sopCode: string) => `lms:certificate:${employeeId}:${sopCode}`,
   journey: (employeeId: string, sopCode: string) => `lms:journey:${employeeId}:${sopCode}`,
   journeyContent: (sopCode: string) => `lms:journey-content:${sopCode.toUpperCase()}`,
-  adminTrainingStatus: (department: string) => `lms:admin:training-status:${department || 'all'}`,
-  adminEmployeeTraining: (department: string) => `lms:admin:employee-training:${department || 'all'}`,
+  adminTrainingStatus: (department: string) => `lms:admin:training-status:v2:${department || 'all'}`,
+  adminEmployeeTraining: (department: string) => `lms:admin:employee-training:v3:${department || 'all'}`,
   adminMeta: () => 'lms:admin:meta',
   adminExamSettings: () => 'lms:admin:exam-settings',
 } as const;

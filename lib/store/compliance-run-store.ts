@@ -203,6 +203,7 @@ export const useComplianceRunStore = create<ComplianceRunState>((set, get) => ({
           body: JSON.stringify({
             sopId: sop._id,
             guidelineIds,
+            includeAnnexures: true,
             provider: provider ?? undefined,
             model: model ?? undefined,
             config: {

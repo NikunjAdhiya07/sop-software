@@ -16,6 +16,8 @@ export interface ISOPGuideline extends Document {
   isScanned: boolean;
   ocrStatus: "pending" | "processing" | "completed" | "failed";
   rawText: string;
+  /** PDF page count from upload OCR (used for fast page estimates). */
+  pageCount?: number;
   clauses: ISOPGuidelineClause[];
   guidelineType?: string;
   category?: string;
@@ -40,6 +42,7 @@ const SOPGuidelineSchema = new Schema<ISOPGuideline>(
       default: "pending",
     },
     rawText: { type: String, default: "" },
+    pageCount: { type: Number, default: 1 },
     clauses: [
       {
         clauseNumber: { type: String, required: true },

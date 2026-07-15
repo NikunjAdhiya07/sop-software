@@ -6,10 +6,20 @@ import FindingCard from './components/FindingCard';
 import { GuidelineSelector } from './components/GuidelineSelector';
 import { getScoreColorClass } from '@/lib/complianceFormatter';
 import { useComplianceRunStore, complianceRunProgressPct } from '@/lib/store/compliance-run-store';
-import { BookOpen, FileText, Layers, CheckCircle, Copy, X, Upload, Sparkles, Cpu, Bot, CheckSquare, Square, ScrollText } from 'lucide-react';
+import { BookOpen, FileText, Layers, CheckCircle, Copy, X, Upload, Sparkles, Cpu, Bot, CheckSquare, Square, ScrollText, ArrowLeft, ClipboardList, CheckCircle2, AlertTriangle, XCircle, Minimize2, Maximize2, Loader2, RefreshCw, Trash2, ChevronDown, ChevronUp, ArrowUpDown, FileDown, Paperclip, History } from 'lucide-react';
+import {
+  annexureStatusBadgeClass,
+  annexureStatusLabel,
+  annexureStatusShortLabel,
+  annexureStatusTitle,
+  resolveAnnexureStatus,
+} from '@/lib/annexureAuditDisplay';
 import dynamic from 'next/dynamic';
+import { exportComplianceReportToPdf } from '@/lib/complianceReportPdf';
 
 const FinalSopModal = dynamic(() => import('@/components/compliance/FinalSopModal'), { ssr: false });
+const SopSourcePreviewModal = dynamic(() => import('@/components/compliance/SopSourcePreviewModal'), { ssr: false });
+const RecheckSopModal = dynamic(() => import('@/components/compliance/RecheckSopModal'), { ssr: false });
 
 interface Guideline {
   _id: string;
@@ -56,11 +66,14 @@ interface ComplianceFinding {
   findingCategory?: string;
   riskLevel?: string;
   guidelineReference?: string;
+  guidelineId?: string;
   evidenceFound?: string;
   evidenceMissing?: string;
   evidenceStrength?: string;
   pageNumber?: string;
   paragraphNumber?: string;
+  guidelineLineNumber?: string;
+  guidelineSourceLine?: string;
   requiresManualReview?: boolean;
   findingType?: string;
   mergedClauseRefs?: string[];
@@ -157,9 +170,32 @@ interface ComplianceReport {
   crossSopDependencies?: CrossSopDependency[];
   findings: ComplianceFinding[];
   analyzedAt: string;
+  /** True when linked annexure text was included in the guideline audit. */
+  annexuresChecked?: boolean;
+  annexureStatus?: 'none' | 'checked' | 'not-checked' | 'linked-unread';
+  linkedAnnexureCount?: number;
+  liveLinkedAnnexureCount?: number;
+  annexureChars?: number;
+  annexuresIncluded?: { label: string; fileName: string; chars: number }[];
+  annexuresSkipped?: { label: string; fileName: string; reason: string }[];
+  /** Newest revised-SOP recheck for this report (list/detail enrichment). */
+  latestRecheck?: {
+    runId: string;
+    score: number;
+    verdict?: string;
+    createdAt?: string;
+    annexuresRead: boolean;
+    annexureStatusTracked: boolean;
+    annexureChars: number;
+    annexureLabels: string[];
+  } | null;
 }
 
 type WorkflowStep = 'fetch-sops' | 'fetch-guidelines' | 'review' | 'analyze' | 'results';
+
+function shortGuidelineLabel(name: string): string {
+  return name.replace(/\s*Guidelines?\s*$/i, '').trim() || name;
+}
 
 function ConsolidatedSectionCard({ sec }: {
   sec: {
@@ -277,6 +313,16 @@ function parseSectionParts(section?: string): number[] {
   return m ? m[0].split('.').map(Number) : [];
 }
 
+// Short label for a section-wise sub-heading, e.g. "4.11.4.1 - Sampling procedure..." -> "4.11.4.1".
+// Findings with no parseable section number are grouped under "General".
+function sectionHeadingLabel(section?: string): string {
+  const raw = (section || '').trim();
+  const lower = raw.toLowerCase();
+  if (!raw || lower === 'not found' || lower === 'n/a' || lower === 'general') return 'General';
+  const m = raw.match(/\d+(?:\.\d+)*/);
+  return m ? m[0] : raw;
+}
+
 // Orders findings by the SOP section they map to (e.g. "4.11.4.1 - Sampling procedure...")
 // so the report reads 1, 1.1, 1.2, 2, ... instead of jumping between sections. Findings
 // with no parseable section number (e.g. "N/A - Not Addressed") sort to the end.
@@ -294,6 +340,121 @@ function compareSectionNumbers(a?: string, b?: string): number {
     if (va !== vb) return va - vb;
   }
   return (a || '').localeCompare(b || '');
+}
+
+type FindingsSortKey = 'severity' | 'section' | 'guideline' | 'confidence' | 'clause';
+type FindingsGroupView = 'guideline' | 'section';
+
+const FINDINGS_SORT_LABELS: Record<FindingsSortKey, string> = {
+  severity: 'Severity',
+  section: 'SOP Section',
+  guideline: 'Guideline',
+  confidence: 'Confidence',
+  clause: 'Clause',
+};
+
+function findingSeverityRank(f: ComplianceFinding): number {
+  const riskOrder: Record<string, number> = { Critical: 0, Major: 1, Minor: 2, Improvement: 3 };
+  const levelOrder: Record<string, number> = {
+    'non-compliant': 0,
+    partial: 1,
+    compliant: 2,
+    'not-applicable': 3,
+    'analysis-failed': 4,
+  };
+  return f.riskLevel ? (riskOrder[f.riskLevel] ?? 4) : (levelOrder[f.complianceLevel] ?? 5);
+}
+
+function compareFindings(a: ComplianceFinding, b: ComplianceFinding, key: FindingsSortKey, dir: 'asc' | 'desc'): number {
+  const mul = dir === 'asc' ? 1 : -1;
+  switch (key) {
+    case 'severity': {
+      const r = findingSeverityRank(a) - findingSeverityRank(b);
+      if (r !== 0) return mul * r;
+      return mul * ((b.matchConfidence ?? 0) - (a.matchConfidence ?? 0));
+    }
+    case 'section':
+      return mul * compareSectionNumbers(a.sopSectionAffected, b.sopSectionAffected);
+    case 'guideline': {
+      const ga = (a.folderName || a.guidelineName || '').toLowerCase();
+      const gb = (b.folderName || b.guidelineName || '').toLowerCase();
+      const c = ga.localeCompare(gb);
+      if (c !== 0) return mul * c;
+      return mul * compareSectionNumbers(a.sopSectionAffected, b.sopSectionAffected);
+    }
+    case 'confidence':
+      return mul * ((a.matchConfidence ?? 0) - (b.matchConfidence ?? 0));
+    case 'clause': {
+      const ca = (a.clauseNumber || '').toLowerCase();
+      const cb = (b.clauseNumber || '').toLowerCase();
+      return mul * ca.localeCompare(cb, undefined, { numeric: true });
+    }
+    default:
+      return 0;
+  }
+}
+
+type FindingListItem = { f: ComplianceFinding; i: number };
+
+type FindingDisplayGroup = {
+  key: string;
+  items: (FindingListItem & { serial: number; subLabel: string; isNewSubGroup: boolean })[];
+};
+
+function buildGuidelineGroupedFindings(
+  items: FindingListItem[],
+  groupOrder: string[],
+): FindingDisplayGroup[] {
+  const map = new Map<string, FindingListItem[]>();
+  for (const item of items) {
+    const key = item.f.folderName || item.f.guidelineName || 'Other';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(item);
+  }
+  const orderedKeys = [
+    ...groupOrder.filter((k) => map.has(k)),
+    ...[...map.keys()].filter((k) => !groupOrder.includes(k)),
+  ];
+  let serial = 0;
+  return orderedKeys.map((key) => {
+    const groupItems = [...map.get(key)!].sort((a, b) =>
+      compareSectionNumbers(a.f.sopSectionAffected, b.f.sopSectionAffected),
+    );
+    let lastSubLabel: string | null = null;
+    return {
+      key,
+      items: groupItems.map((item) => {
+        const subLabel = sectionHeadingLabel(item.f.sopSectionAffected);
+        const isNewSubGroup = subLabel !== lastSubLabel;
+        lastSubLabel = subLabel;
+        return { ...item, serial: ++serial, subLabel, isNewSubGroup };
+      }),
+    };
+  });
+}
+
+function buildSectionGroupedFindings(items: FindingListItem[]): FindingDisplayGroup[] {
+  const map = new Map<string, FindingListItem[]>();
+  for (const item of items) {
+    const key = sectionHeadingLabel(item.f.sopSectionAffected);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(item);
+  }
+  const orderedKeys = [...map.keys()].sort((a, b) => compareSectionNumbers(a, b));
+  let serial = 0;
+  return orderedKeys.map((key) => {
+    const groupItems = map.get(key)!;
+    let lastSubLabel: string | null = null;
+    return {
+      key,
+      items: groupItems.map((item) => {
+        const subLabel = item.f.folderName || item.f.guidelineName || 'Other';
+        const isNewSubGroup = subLabel !== lastSubLabel;
+        lastSubLabel = subLabel;
+        return { ...item, serial: ++serial, subLabel, isNewSubGroup };
+      }),
+    };
+  });
 }
 
 // ── Audit completeness report — verifies the entire guideline library was reviewed ──
@@ -601,9 +762,16 @@ export default function ComplianceEnginePage() {
   const [preflightData, setPreflightData] = useState({ checked: false, existingCount: 0, newCount: 0 });
   const [selectedReport, setSelectedReport] = useState<ComplianceReport | null>(null);
   const [loadingFullReport, setLoadingFullReport] = useState(false);
+  const [fullReportLoadError, setFullReportLoadError] = useState<string | null>(null);
   const [filterDepartment, setFilterDepartment] = useState('all');
   const [sopSortKey, setSopSortKey] = useState<'identifier' | 'version' | 'name' | 'location' | 'department'>('identifier');
   const [sopSortDir, setSopSortDir] = useState<'asc' | 'desc'>('asc');
+  const [reportSortKey, setReportSortKey] = useState<'sopIdentifier' | 'sopName' | 'department' | 'overallScore' | 'complianceStatus' | 'analyzedAt'>('analyzedAt');
+  const [reportSortDir, setReportSortDir] = useState<'asc' | 'desc'>('desc');
+  const [reportFilterDepartment, setReportFilterDepartment] = useState('all');
+  const [reportFilterAnnexures, setReportFilterAnnexures] = useState<
+    'all' | 'checked' | 'none' | 'not-checked' | 'linked-unread'
+  >('all');
   const [filterStatus, setFilterStatus] = useState<'all' | 'compliant' | 'partial' | 'non-compliant' | 'not-applicable'>('all');
   const [hideNotApplicable, setHideNotApplicable] = useState(true);
   const [hideFailedFindings, setHideFailedFindings] = useState(true);
@@ -614,14 +782,30 @@ export default function ComplianceEnginePage() {
   const [selectedFindingIds, setSelectedFindingIds] = useState<Set<number>>(new Set());
   const [showConsolidatedSummary, setShowConsolidatedSummary] = useState(false);
   const [finalSopOpen, setFinalSopOpen] = useState(false);
+  const [recheckOpen, setRecheckOpen] = useState(false);
+  const [recheckInitialView, setRecheckInitialView] = useState<'run' | 'history'>('run');
+  const [recheckTarget, setRecheckTarget] = useState<{
+    _id: string;
+    sopIdentifier: string;
+    sopName: string;
+  } | null>(null);
+  const [sopPreviewOpen, setSopPreviewOpen] = useState(false);
+  const [rerunningCompliance, setRerunningCompliance] = useState(false);
   const [isSummaryFullScreen, setIsSummaryFullScreen] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [hoveredFolder, setHoveredFolder] = useState<string | null>(null);
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
+  const [collapsedFindingGroups, setCollapsedFindingGroups] = useState<Set<string>>(new Set());
+  const [findingsGroupView, setFindingsGroupView] = useState<FindingsGroupView>('guideline');
+  const [findingsSortKey, setFindingsSortKey] = useState<FindingsSortKey>('severity');
+  const [findingsSortDir, setFindingsSortDir] = useState<'asc' | 'desc'>('asc');
+  const [findingsSortOpen, setFindingsSortOpen] = useState(false);
+  const findingsSortRef = useRef<HTMLDivElement | null>(null);
   const groupRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const findingsScrollRef = useRef<HTMLDivElement | null>(null);
-  const [applicableFindings, setApplicableFindings] = useState<Set<string>>(new Set());
-  const [submittingApplicable, setSubmittingApplicable] = useState(false);
+  const reportExportRef = useRef<HTMLDivElement | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [applyingFixGapId, setApplyingFixGapId] = useState<string | null>(null);
   const [forceFullReanalysis, setForceFullReanalysis] = useState(false);
   const [llmInfo, setLlmInfo] = useState<{
@@ -1002,11 +1186,138 @@ export default function ComplianceEnginePage() {
     });
   }, [filteredSops, sopSortKey, sopSortDir]);
 
+  const reportDepartments = useMemo(() => {
+    const depts = new Set<string>();
+    for (const r of reports ?? []) {
+      const d = r.department?.trim();
+      if (d) depts.add(d);
+    }
+    return [...depts].sort((a, b) => a.localeCompare(b));
+  }, [reports]);
+
+  const filteredReports = useMemo(() => {
+    let list = reports ?? [];
+    if (reportFilterDepartment !== 'all') {
+      list = list.filter((r) => r.department === reportFilterDepartment);
+    }
+    if (reportFilterAnnexures !== 'all') {
+      list = list.filter((r) => resolveAnnexureStatus(r) === reportFilterAnnexures);
+    }
+    return list;
+  }, [reports, reportFilterDepartment, reportFilterAnnexures]);
+
+  const sortedReports = useMemo(() => {
+    const dir = reportSortDir === 'asc' ? 1 : -1;
+    const norm = (v?: string) => (v ?? '').trim().toLowerCase();
+    const statusRank = (status: string) => {
+      switch (status) {
+        case 'Fully Compliant': return 4;
+        case 'Partially Compliant': return 3;
+        case 'Non-Compliant': return 2;
+        case 'Analysis Incomplete': return 1;
+        default: return 0;
+      }
+    };
+    return [...filteredReports].sort((a, b) => {
+      switch (reportSortKey) {
+        case 'sopIdentifier':
+          return dir * norm(a.sopIdentifier).localeCompare(norm(b.sopIdentifier));
+        case 'sopName':
+          return dir * norm(a.sopName).localeCompare(norm(b.sopName));
+        case 'department':
+          return dir * norm(a.department).localeCompare(norm(b.department));
+        case 'overallScore':
+          return dir * (a.overallScore - b.overallScore);
+        case 'complianceStatus':
+          return dir * (statusRank(a.complianceStatus) - statusRank(b.complianceStatus)) ||
+            dir * norm(a.complianceStatus).localeCompare(norm(b.complianceStatus));
+        case 'analyzedAt':
+          return dir * (new Date(a.analyzedAt).getTime() - new Date(b.analyzedAt).getTime());
+        default:
+          return 0;
+      }
+    });
+  }, [filteredReports, reportSortKey, reportSortDir]);
+
+  const toggleFindingGroup = (groupKey: string) => {
+    setCollapsedFindingGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  };
+
+  // Export the full on-screen report (header + every finding) to a PDF that
+  // mirrors the UI layout. Expand all collapsed groups first so nothing is
+  // dropped, then restore the previous collapsed state afterwards.
+  const handleExportPdf = async () => {
+    if (!reportExportRef.current || !selectedReport || exportingPdf) return;
+    setExportingPdf(true);
+    const prevCollapsed = collapsedFindingGroups;
+    if (prevCollapsed.size > 0) setCollapsedFindingGroups(new Set());
+    // Wait for the group-expansion re-render to flush to the DOM.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    try {
+      const safeName = `${selectedReport.sopIdentifier || 'compliance'}-report`
+        .replace(/[^\w.-]+/g, '_');
+      await exportComplianceReportToPdf({
+        element: reportExportRef.current,
+        fileName: `${safeName}.pdf`,
+        unclip: [findingsScrollRef.current],
+      });
+    } catch (err) {
+      console.error('Compliance PDF export failed', err);
+      alert('Could not generate the PDF. Please try again.');
+    } finally {
+      if (prevCollapsed.size > 0) setCollapsedFindingGroups(prevCollapsed);
+      setExportingPdf(false);
+    }
+  };
+
+  const scrollToFindingSubGroup = useCallback((groupKey: string, subLabel: string) => {
+    setCollapsedFindingGroups((prev) => {
+      if (!prev.has(groupKey)) return prev;
+      const next = new Set(prev);
+      next.delete(groupKey);
+      return next;
+    });
+    const key = `${groupKey}::${subLabel}`;
+    const scroll = () => {
+      const el = sectionRefs.current[key];
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      el.classList.add('ring-2', 'ring-purple-400', 'ring-offset-1', 'rounded');
+      window.setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-purple-400', 'ring-offset-1', 'rounded');
+      }, 1600);
+    };
+    window.setTimeout(scroll, 80);
+  }, []);
+
+  const toggleFindingsSort = (key: FindingsSortKey) => {
+    if (findingsSortKey === key) {
+      setFindingsSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setFindingsSortKey(key);
+      setFindingsSortDir(key === 'confidence' ? 'desc' : 'asc');
+    }
+    setFindingsSortOpen(false);
+  };
+
   const toggleSopSort = (key: typeof sopSortKey) => {
     if (sopSortKey === key) setSopSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else {
       setSopSortKey(key);
       setSopSortDir('asc');
+    }
+  };
+
+  const toggleReportSort = (key: typeof reportSortKey) => {
+    if (reportSortKey === key) setReportSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setReportSortKey(key);
+      setReportSortDir(key === 'analyzedAt' || key === 'overallScore' ? 'desc' : 'asc');
     }
   };
 
@@ -1074,6 +1385,34 @@ export default function ComplianceEnginePage() {
     );
   };
 
+  const ReportSortHeader = ({
+    label,
+    sortKey,
+    className = '',
+  }: {
+    label: string;
+    sortKey: typeof reportSortKey;
+    className?: string;
+  }) => {
+    const active = reportSortKey === sortKey;
+    return (
+      <th className={`px-3 py-2 text-left ${className}`}>
+        <button
+          type="button"
+          onClick={() => toggleReportSort(sortKey)}
+          className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+            active ? 'text-purple-700' : 'text-gray-500 hover:text-purple-600'
+          }`}
+        >
+          {label}
+          <span className={`text-[10px] ${active ? 'text-purple-600' : 'text-gray-300'}`}>
+            {active ? (reportSortDir === 'asc' ? '▲' : '▼') : '↕'}
+          </span>
+        </button>
+      </th>
+    );
+  };
+
   const getStepStyle = (id: string) => {
     const isActive = currentStep === id;
     return `flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl transition-all border cursor-pointer ${isActive ? 'bg-purple-600 text-white shadow-lg border-purple-500' : 'bg-white text-gray-500 border-gray-200 hover:bg-purple-50 hover:border-purple-200'}`;
@@ -1096,12 +1435,11 @@ export default function ComplianceEnginePage() {
   };
 
   const handleToggleApplicable = (findingId: string, isChecked: boolean) => {
-    setApplicableFindings((prev) => {
-      const next = new Set(prev);
-      if (isChecked) next.add(findingId);
-      else next.delete(findingId);
-      return next;
-    });
+    // Marking a finding "Applicable" accepts its fix — which adds its point to
+    // the Final SOP changed doc — and opens the Final SOP preview. Unchecking
+    // removes the point from the changed doc.
+    void handleReviewStatusChange(findingId, isChecked ? 'accepted' : 'pending');
+    if (isChecked) setFinalSopOpen(true);
   };
 
   const handleSelectReport = async (report: ComplianceReport) => {
@@ -1109,11 +1447,20 @@ export default function ComplianceEnginePage() {
     setFilterGuideline('all');
     setIsFullScreen(true);
     setLoadingFullReport(true);
+    setFullReportLoadError(null);
     try {
       const res = await fetch(`/api/compliance/analyze?reportId=${report._id}`);
       const data = await res.json();
-      if (data.success) setSelectedReport(data.report);
-    } catch { /* silent */ } finally { setLoadingFullReport(false); }
+      if (data.success && data.report) {
+        setSelectedReport(data.report);
+      } else {
+        setFullReportLoadError(data.error ?? 'Could not load report findings');
+      }
+    } catch {
+      setFullReportLoadError('Could not load report findings');
+    } finally {
+      setLoadingFullReport(false);
+    }
   };
 
   const resolveSopIdForReport = useCallback((): string | null => {
@@ -1121,6 +1468,68 @@ export default function ComplianceEnginePage() {
     const match = sops.find((s) => s.identifier === selectedReport?.sopIdentifier);
     return match?._id ?? null;
   }, [selectedReport, sops]);
+
+  const handleRerunComplianceForReport = useCallback(async () => {
+    if (!selectedReport || isAnalyzing) return;
+    const sopId = resolveSopIdForReport();
+    const sop = sops.find((s) => s._id === sopId);
+    if (!sop) {
+      alert('Could not resolve SOP for this report.');
+      return;
+    }
+
+    const fromFindings = [
+      ...new Set(
+        (selectedReport.findings ?? [])
+          .map((f) => f.guidelineId)
+          .filter((id): id is string => !!id?.trim()),
+      ),
+    ];
+    const guidelineIds =
+      fromFindings.length > 0 ? fromFindings : [...selectedGuidelineIds];
+    if (!guidelineIds.length) {
+      alert('No guidelines available to rerun compliance. Select guidelines in the review step first.');
+      return;
+    }
+
+    const selectedList = guidelines.filter((g) => guidelineIds.includes(g._id));
+    const guidelineLabel =
+      selectedList.length === 1
+        ? selectedList[0].name
+        : `${selectedList.length} guidelines`;
+
+    setRerunningCompliance(true);
+    setFinalSopOpen(false);
+    setCurrentStep('analyze');
+    try {
+      await startRun({
+        candidates: [{ _id: sop._id, identifier: sop.identifier, name: sop.name }],
+        guidelineIds,
+        guidelineLabel,
+        forceRefresh: true,
+        provider: selectedProvider,
+        model:
+          selectedProvider === 'claude'
+            ? selectedModel
+            : selectedProvider === 'codex'
+              ? codexStatus?.complianceModel ?? 'gpt-5.4-mini'
+              : undefined,
+      });
+    } finally {
+      setRerunningCompliance(false);
+    }
+  }, [
+    selectedReport,
+    isAnalyzing,
+    resolveSopIdForReport,
+    sops,
+    selectedGuidelineIds,
+    guidelines,
+    selectedProvider,
+    selectedModel,
+    codexStatus?.complianceModel,
+    startRun,
+  ]);
 
   const handleReviewStatusChange = async (gapId: string, status: 'pending' | 'accepted' | 'disputed' | 'implemented') => {
     try {
@@ -1194,18 +1603,8 @@ export default function ComplianceEnginePage() {
     return [...new Set(guidelines.map((g) => g.folder))];
   }, [selectedReport, guidelines]);
 
-  const visibleFindings = useMemo(() => {
+  const filteredFindings = useMemo(() => {
     if (!selectedReport?.findings) return [];
-    const riskOrder: Record<string, number> = { Critical: 0, Major: 1, Minor: 2, Improvement: 3 };
-    const levelOrder: Record<string, number> = {
-      'non-compliant': 0,
-      partial: 1,
-      compliant: 2,
-      'not-applicable': 3,
-      'analysis-failed': 4,
-    };
-    const rank = (f: ComplianceFinding) =>
-      f.riskLevel ? (riskOrder[f.riskLevel] ?? 4) : (levelOrder[f.complianceLevel] ?? 5);
     return selectedReport.findings
       .map((f, i) => ({ f, i }))
       .filter(({ f }) => {
@@ -1214,67 +1613,72 @@ export default function ComplianceEnginePage() {
         if (hideNotApplicable && f.complianceLevel === 'not-applicable') return false;
         if (hideFailedFindings && f.complianceLevel === 'analysis-failed') return false;
         return true;
-      })
-      .sort((a, b) => {
-        const r = rank(a.f) - rank(b.f);
-        if (r !== 0) return r;
-        return (b.f.matchConfidence ?? 0) - (a.f.matchConfidence ?? 0);
       });
   }, [selectedReport, filterStatus, filterGuideline, hideNotApplicable, hideFailedFindings]);
 
-  const groupedFindings = useMemo(() => {
-    const groupOrder = folders.map((f) => f.folderName);
-    const map = new Map<string, { f: ComplianceFinding; i: number }[]>();
-    for (const item of visibleFindings) {
-      const key = item.f.folderName || item.f.guidelineName || 'Other';
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(item);
-    }
-    const orderedKeys = [
-      ...groupOrder.filter((k) => map.has(k)),
-      ...[...map.keys()].filter((k) => !groupOrder.includes(k)),
-    ];
-    let serial = 0;
-    return orderedKeys.map((folderName) => {
-      const items = [...map.get(folderName)!].sort((a, b) => compareSectionNumbers(a.f.sopSectionAffected, b.f.sopSectionAffected));
-      return {
-        folderName,
-        items: items.map((item) => ({ ...item, serial: ++serial })),
-      };
-    });
-  }, [visibleFindings, folders]);
+  const sortedFindings = useMemo(() => {
+    return [...filteredFindings].sort((a, b) => compareFindings(a.f, b.f, findingsSortKey, findingsSortDir));
+  }, [filteredFindings, findingsSortKey, findingsSortDir]);
 
-  // Falls back to the first guideline group whenever the active one scrolls out of the
+  const visibleFindings = sortedFindings;
+
+  const groupedFindings = useMemo(
+    () => buildGuidelineGroupedFindings(sortedFindings, folders.map((f) => f.folderName)),
+    [sortedFindings, folders],
+  );
+
+  const sectionGroupedFindings = useMemo(
+    () => buildSectionGroupedFindings(sortedFindings),
+    [sortedFindings],
+  );
+
+  const displayGroupedFindings = findingsGroupView === 'guideline' ? groupedFindings : sectionGroupedFindings;
+
+  // Falls back to the first group whenever the active one scrolls out of the
   // current filter/report (avoids setState-in-effect for the "no scroll yet" default).
-  const displayActiveFolder = useMemo(() => {
-    if (activeFolder && groupedFindings.some((g) => g.folderName === activeFolder)) return activeFolder;
-    return groupedFindings[0]?.folderName ?? null;
-  }, [activeFolder, groupedFindings]);
+  const displayActiveGroupKey = useMemo(() => {
+    if (activeFolder && displayGroupedFindings.some((g) => g.key === activeFolder)) return activeFolder;
+    return displayGroupedFindings[0]?.key ?? null;
+  }, [activeFolder, displayGroupedFindings]);
 
-  // Highlights the guideline chip for whichever group heading is currently at the top
+  // Highlights the group chip for whichever group heading is currently at the top
   // of the scrollable findings list, so the header tracks what the user is reading.
   useEffect(() => {
     const root = findingsScrollRef.current;
-    if (!root || groupedFindings.length === 0) return;
+    if (!root || displayGroupedFindings.length === 0) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
         const visible = entries.filter((e) => e.isIntersecting);
         if (visible.length === 0) return;
         const topMost = visible.reduce((a, b) => (a.boundingClientRect.top <= b.boundingClientRect.top ? a : b));
-        const folderName = (topMost.target as HTMLElement).dataset.folder;
-        if (folderName) setActiveFolder(folderName);
+        const groupKey = (topMost.target as HTMLElement).dataset.groupKey;
+        if (groupKey) setActiveFolder(groupKey);
       },
       { root, rootMargin: '0px 0px -75% 0px', threshold: 0 },
     );
 
-    groupedFindings.forEach((g) => {
-      const el = groupRefs.current[g.folderName];
+    displayGroupedFindings.forEach((g) => {
+      const el = groupRefs.current[g.key];
       if (el) observer.observe(el);
     });
 
     return () => observer.disconnect();
-  }, [groupedFindings]);
+  }, [displayGroupedFindings]);
+
+  useEffect(() => {
+    if (!findingsSortOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (!findingsSortRef.current?.contains(e.target as Node)) setFindingsSortOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [findingsSortOpen]);
+
+  useEffect(() => {
+    setCollapsedFindingGroups(new Set());
+    setActiveFolder(null);
+  }, [findingsGroupView]);
 
   const allFindingsSelected =
     visibleFindings.length > 0 && visibleFindings.every(({ i }) => selectedFindingIds.has(i));
@@ -1318,19 +1722,68 @@ export default function ComplianceEnginePage() {
     })).sort((a, b) => { const na = parseFloat(a.sectionKey), nb = parseFloat(b.sectionKey); return !isNaN(na) && !isNaN(nb) ? na - nb : a.sectionKey.localeCompare(b.sectionKey); });
   }, [selectedReport, selectedFindingIds]);
 
-  const submitApplicableFindings = async () => {
-    if (!selectedReport || applicableFindings.size === 0) return;
-    setSubmittingApplicable(true);
-    try {
-      const res = await fetch('/api/compliance/applicable-findings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reportId: selectedReport._id, findingIds: [...applicableFindings] }),
-      });
-      const data = await res.json();
-      if (data.success) router.push(`/compliance/applicable?reportId=${selectedReport._id}`);
-    } catch { /* silent */ } finally { setSubmittingApplicable(false); }
+  const isActionableFix = (f: ComplianceFinding) =>
+    (f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant') &&
+    (f.suggestedText || f.suggestedAction) &&
+    !!f.sopTextSnippet?.trim();
+
+  const isApprovedFix = (f: ComplianceFinding) => {
+    const status = f.reviewStatus ?? 'pending';
+    return status === 'accepted' || status === 'implemented';
   };
+
+  const actionableFixes = useMemo(
+    () => (selectedReport?.findings ?? []).filter(isActionableFix),
+    [selectedReport],
+  );
+
+  const approvedFixes = useMemo(
+    () => actionableFixes.filter(isApprovedFix),
+    [actionableFixes],
+  );
+
+  const pendingApprovalFixCount = actionableFixes.length - approvedFixes.length;
+
+  const handleApproveAllFixes = async () => {
+    if (!selectedReport) return;
+    const toApprove = actionableFixes.filter((f) => !isApprovedFix(f));
+    if (!toApprove.length) return;
+
+    const gapIds = toApprove.map((f) => f.gapId ?? f._id);
+    await Promise.all(
+      gapIds.map((gapId) =>
+        fetch('/api/compliance/findings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gapId, reviewStatus: 'accepted' }),
+        }),
+      ),
+    );
+
+    const approvedSet = new Set(gapIds);
+    setSelectedReport({
+      ...selectedReport,
+      findings: selectedReport.findings.map((f) =>
+        approvedSet.has(f.gapId ?? f._id) ? { ...f, reviewStatus: 'accepted' as const } : f,
+      ),
+    });
+  };
+
+  const reportStatusTotals = useMemo(() => {
+    const compliant = selectedReport?.compliantCount ?? 0;
+    const partial = selectedReport?.partialCount ?? 0;
+    const nonCompliant = selectedReport?.nonCompliantCount ?? 0;
+    return { compliant, partial, nonCompliant, total: compliant + partial + nonCompliant };
+  }, [selectedReport]);
+
+  const findingsLoaded = (selectedReport?.findings?.length ?? 0) > 0;
+  const expectsFindings = reportStatusTotals.total > 0;
+  const findingsPending =
+    !loadingFullReport && !fullReportLoadError && expectsFindings && !findingsLoaded;
+
+  const statusPct = (n: number) =>
+    reportStatusTotals.total > 0 ? Math.round((n / reportStatusTotals.total) * 100) : 0;
+
 
   const progressPct = complianceRunProgressPct(analysisStats);
 
@@ -1338,23 +1791,23 @@ export default function ComplianceEnginePage() {
     <div className="min-h-screen bg-[#f8f9fa] font-sans">
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-700 to-purple-500">
+        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <h1 className="text-sm font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-700 to-purple-500 whitespace-nowrap shrink-0">
               Compliance Intelligence Engine
             </h1>
-            <div className="flex flex-wrap items-center gap-2 mt-1">
-              <p className="text-sm text-gray-500 font-medium">Automated Regulatory Compliance Validation</p>
+            <div className="hidden sm:block h-3.5 w-px bg-gray-200 shrink-0" />
+            <div className="hidden sm:flex items-center gap-1.5 min-w-0">
               <span
-                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wide bg-indigo-50 text-indigo-800 border border-indigo-200"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide bg-indigo-50 text-indigo-800 border border-indigo-200 whitespace-nowrap"
                 title="V3 precision engine: gatekeeping, per-clause analysis, intelligent scoring"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-                V3 Engine · Active
+                <span className="w-1 h-1 rounded-full bg-indigo-500 animate-pulse" />
+                V3 · Active
               </span>
               {llmInfo && (
                 <span
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wide ${
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide whitespace-nowrap ${
                     selectedProvider === 'ollama'
                       ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                       : selectedProvider === 'claude'
@@ -1371,7 +1824,7 @@ export default function ComplianceEnginePage() {
                       : `Compliance model: ${llmInfo.complianceModel}`
                   }
                 >
-                  <span className={`w-1.5 h-1.5 rounded-full ${
+                  <span className={`w-1 h-1 rounded-full ${
                     selectedProvider === 'ollama' ? 'bg-emerald-500'
                     : selectedProvider === 'claude' ? 'bg-violet-500'
                     : selectedProvider === 'codex' ? 'bg-sky-500'
@@ -1382,7 +1835,7 @@ export default function ComplianceEnginePage() {
                     : selectedProvider === 'codex'
                     ? `Codex · ${codexStatus?.complianceModel ?? 'gpt-5.4-mini'}`
                     : selectedProvider === 'ollama'
-                    ? 'Ollama (local)'
+                    ? 'Ollama'
                     : selectedProvider === 'gemini'
                     ? `Gemini · ${llmInfo.complianceModel}`
                     : `LLM: ${llmInfo.label}`}
@@ -1390,7 +1843,7 @@ export default function ComplianceEnginePage() {
               )}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => setSelectedProvider((p) => (p === 'claude' ? 'gemini' : 'claude'))}
@@ -1401,15 +1854,15 @@ export default function ComplianceEnginePage() {
                     ? `Claude not connected: ${claudeStatus.error}`
                     : 'Use Claude Code for compliance analysis (default)'
               }
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                 selectedProvider === 'claude'
                   ? claudeStatus?.ok === false && !claudeStatus?.loading
-                    ? 'border border-red-600 bg-red-600 text-white hover:bg-red-700 ring-2 ring-red-300'
-                    : 'border border-violet-600 bg-violet-600 text-white hover:bg-violet-700 ring-2 ring-violet-300'
+                    ? 'border border-red-600 bg-red-600 text-white hover:bg-red-700 ring-1 ring-red-300'
+                    : 'border border-violet-600 bg-violet-600 text-white hover:bg-violet-700 ring-1 ring-violet-300'
                   : 'border border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
               }`}
             >
-              <Sparkles className="h-3.5 w-3.5" />
+              <Sparkles className="h-3 w-3" />
               {selectedProvider === 'claude'
                 ? claudeStatus?.loading
                   ? 'Claude…'
@@ -1428,15 +1881,15 @@ export default function ComplianceEnginePage() {
                     ? `Codex not connected: ${codexStatus.error}`
                     : 'Codex — local CLI via ChatGPT subscription (no API key)'
               }
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                 selectedProvider === 'codex'
                   ? codexStatus?.ok === false && !codexStatus?.loading
-                    ? 'border border-red-600 bg-red-600 text-white hover:bg-red-700 ring-2 ring-red-300'
-                    : 'border border-sky-600 bg-sky-600 text-white hover:bg-sky-700 ring-2 ring-sky-300'
+                    ? 'border border-red-600 bg-red-600 text-white hover:bg-red-700 ring-1 ring-red-300'
+                    : 'border border-sky-600 bg-sky-600 text-white hover:bg-sky-700 ring-1 ring-sky-300'
                   : 'border border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
               }`}
             >
-              <Bot className="h-3.5 w-3.5" />
+              <Bot className="h-3 w-3" />
               {selectedProvider === 'codex'
                 ? codexStatus?.loading
                   ? 'Codex…'
@@ -1449,9 +1902,9 @@ export default function ComplianceEnginePage() {
               type="button"
               onClick={() => setSelectedProvider('gemini')}
               title="Use Gemini for compliance analysis"
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                 selectedProvider === 'gemini'
-                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 ring-2 ring-blue-300'
+                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 ring-1 ring-blue-300'
                   : 'border border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
               }`}
             >
@@ -1461,20 +1914,20 @@ export default function ComplianceEnginePage() {
               type="button"
               onClick={() => setSelectedProvider((p) => (p === 'ollama' ? 'claude' : 'ollama'))}
               title={selectedProvider === 'ollama' ? 'Using local Ollama — click for Claude' : 'Use local Ollama for compliance'}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                 selectedProvider === 'ollama'
-                  ? 'border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 ring-2 ring-emerald-300'
+                  ? 'border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 ring-1 ring-emerald-300'
                   : 'border border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
               }`}
             >
-              <Cpu className="h-3.5 w-3.5" />
+              <Cpu className="h-3 w-3" />
               {selectedProvider === 'ollama' ? 'Local AI ✓' : 'Local AI'}
             </button>
             {selectedProvider === 'claude' && (
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
-                className="rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                className="rounded-md border border-violet-300 bg-white px-1.5 py-1 text-[11px] font-medium text-gray-700 focus:outline-none focus:ring-1 focus:ring-violet-400"
               >
                 <option value="claude-haiku-4-5-20251001">Haiku 4.5 (fast)</option>
                 <option value="claude-sonnet-4-6">Sonnet 4.6 (recommended)</option>
@@ -1482,7 +1935,7 @@ export default function ComplianceEnginePage() {
             )}
             <button
               onClick={() => router.push('/dashboard')}
-              className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-all text-sm font-semibold shadow-sm"
+              className="flex items-center gap-1 px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-md transition-all text-[11px] font-semibold shadow-sm"
             >
               ← Dashboard
             </button>
@@ -1490,55 +1943,21 @@ export default function ComplianceEnginePage() {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        {selectedProvider === 'claude' && claudeStatus && !claudeStatus.loading && (
-          <div
-            className={`mb-6 rounded-lg border px-4 py-3 text-sm ${
-              claudeStatus.ok
-                ? 'border-violet-200 bg-violet-50 text-violet-900'
-                : 'border-red-200 bg-red-50 text-red-700'
-            }`}
-          >
-            {claudeStatus.ok ? (
-              <>
-                Compliance will use your Claude subscription as <strong>{claudeStatus.email}</strong>
-                {claudeStatus.subscriptionType ? ` (${claudeStatus.subscriptionType})` : ''}
-                {' · '}model: <strong>{selectedModel}</strong>
-              </>
-            ) : (
-              <>
-                Claude is not connected. Run <code className="rounded bg-red-100 px-1">claude auth login</code> in a terminal, then refresh.
-                {claudeStatus.error ? ` — ${claudeStatus.error}` : ''}
-              </>
-            )}
+      <div className="max-w-7xl mx-auto px-6 pt-3 pb-6">
+        {selectedProvider === 'claude' && claudeStatus && !claudeStatus.loading && !claudeStatus.ok && (
+          <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Claude is not connected. Run <code className="rounded bg-red-100 px-1">claude auth login</code> in a terminal, then refresh.
+            {claudeStatus.error ? ` — ${claudeStatus.error}` : ''}
           </div>
         )}
-        {selectedProvider === 'codex' && codexStatus && !codexStatus.loading && (
-          <div
-            className={`mb-6 rounded-lg border px-4 py-3 text-sm ${
-              codexStatus.ok
-                ? 'border-sky-200 bg-sky-50 text-sky-900'
-                : 'border-red-200 bg-red-50 text-red-700'
-            }`}
-          >
-            {codexStatus.ok ? (
-              <>
-                Compliance will use your ChatGPT subscription via Codex CLI
-                {codexStatus.authMode ? ` (${codexStatus.authMode})` : ''}
-                {' · '}model: <strong>{codexStatus.complianceModel ?? 'gpt-5.4-mini'}</strong>
-                {codexStatus.codexVersion ? ` · CLI v${codexStatus.codexVersion}` : ''}
-                {' · '}No OpenAI API key required — uses local <code className="rounded bg-sky-100 px-1">codex exec</code>
-              </>
-            ) : (
-              <>
-                Codex is not connected. Run <code className="rounded bg-red-100 px-1">codex login</code> in a terminal, then refresh.
-                {codexStatus.error ? ` — ${codexStatus.error}` : ''}
-              </>
-            )}
+        {selectedProvider === 'codex' && codexStatus && !codexStatus.loading && !codexStatus.ok && (
+          <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Codex is not connected. Run <code className="rounded bg-red-100 px-1">codex login</code> in a terminal, then refresh.
+            {codexStatus.error ? ` — ${codexStatus.error}` : ''}
           </div>
         )}
         {/* Step tabs */}
-        <div className="flex flex-wrap items-center gap-3 mb-10">
+        <div className="flex flex-wrap items-center gap-3 mb-4">
           {([
             { id: 'fetch-sops',       label: '1. SOPs',       icon: '📄', count: sopTotal || sops.length },
             { id: 'fetch-guidelines', label: '2. Guidelines', icon: '📚', count: guidelines.length },
@@ -2357,24 +2776,37 @@ export default function ComplianceEnginePage() {
 
         {/* Step 5: Results — matches reference dev folder grid layout */}
         {currentStep === 'results' && (
-          <div className={`${isFullScreen ? 'fixed inset-0 z-50 bg-[#f8f9fa] p-6 overflow-hidden' : 'grid grid-cols-1 xl:grid-cols-12 gap-8 h-[calc(100vh-180px)]'}`}>
+          <div className={`${isFullScreen ? 'fixed inset-0 z-50 bg-[#f8f9fa] px-0.5 pt-3 pb-6 overflow-hidden' : 'grid grid-cols-1 xl:grid-cols-12 gap-8 h-[calc(100vh-160px)]'}`}>
 
             {!isFullScreen && (
             <div className={`${selectedReport ? 'xl:col-span-4' : 'xl:col-span-12'} bg-white rounded-2xl border border-gray-200 shadow-sm flex flex-col overflow-hidden transition-all duration-500`}>
-              <div className="p-5 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white z-10">
-                <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+              <div className="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between gap-2 sticky top-0 bg-white z-10">
+                <h2 className="text-sm font-bold text-gray-800 flex items-center gap-2">
                   Generated Reports
-                  <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full font-bold">
-                    {reports?.length || 0}
+                  <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-[10px] rounded-full font-bold">
+                    {reportFilterDepartment === 'all' && reportFilterAnnexures === 'all'
+                      ? reports?.length || 0
+                      : `${filteredReports.length}/${reports?.length || 0}`}
                   </span>
                 </h2>
-                <button
-                  onClick={fetchReports}
-                  className="p-2 hover:bg-gray-100 text-gray-400 hover:text-purple-600 rounded-lg transition-all"
-                  title="Refresh"
-                >
-                  <span className={loadingReports ? 'animate-spin block' : ''}>🔄</span>
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {(reports ?? []).some((r) => resolveAnnexureStatus(r) !== 'checked') && (
+                    <span
+                      className="hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold border border-amber-200 bg-amber-50 text-amber-800"
+                      title="Reports where annexures were not connected or not readable — re-run after linking annexures"
+                    >
+                      <Paperclip className="h-3 w-3" />
+                      {(reports ?? []).filter((r) => resolveAnnexureStatus(r) !== 'checked').length} need annexure check
+                    </span>
+                  )}
+                  <button
+                    onClick={fetchReports}
+                    className="p-1.5 hover:bg-gray-100 text-gray-400 hover:text-purple-600 rounded-md transition-all"
+                    title="Refresh"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${loadingReports ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
               </div>
 
               {loadingReports ? (
@@ -2396,150 +2828,439 @@ export default function ComplianceEnginePage() {
                   </button>
                 </div>
               ) : (
-                <div className={`overflow-y-auto p-3 space-y-2 ${selectedReport ? 'flex-1' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 space-y-0 w-full'}`}>
-                  {(reports || []).map((report) => (
-                    <div
-                      key={report._id}
-                      onClick={() => {
-                        handleSelectReport(report);
-                        setFilterStatus('all');
-                      }}
-                      className={`relative group p-5 rounded-2xl text-left transition-all duration-300 cursor-pointer border-2 ${
-                        selectedReport?._id === report._id
-                          ? 'bg-purple-50 border-purple-400 shadow-md shadow-purple-100'
-                          : 'bg-gray-50 border-gray-100 hover:border-purple-300 hover:bg-purple-50/50'
-                      }`}
+                <>
+                <div className="px-4 py-2 border-b border-gray-100 flex flex-wrap items-center gap-2 bg-gray-50/50">
+                  <span className="text-[11px] font-semibold text-gray-500">Department:</span>
+                  <div className="relative">
+                    <select
+                      value={reportFilterDepartment}
+                      onChange={(e) => setReportFilterDepartment(e.target.value)}
+                      className="pl-2.5 pr-7 py-1 bg-white border border-gray-200 rounded-md text-gray-700 focus:outline-none focus:ring-1 focus:ring-purple-400 text-[11px] appearance-none cursor-pointer hover:border-purple-300 transition-all font-medium min-w-[140px]"
                     >
-                      <button
-                        onClick={(e) => handleDeleteReport(report._id, e)}
-                        className="absolute top-2 right-2 p-1.5 hover:bg-rose-50 text-gray-300 hover:text-rose-500 rounded-md opacity-0 group-hover:opacity-100 transition-all z-10"
-                        title="Delete Report"
-                      >
-                        🗑️
-                      </button>
-
-                      <div className="flex justify-between items-start mb-3">
-                        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                          {report.sopIdentifier}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <div className={`w-3 h-3 rounded-full ${
-                            report.overallScore >= 7 ? 'bg-emerald-500' :
-                            report.overallScore >= 4 ? 'bg-amber-500' :
-                            'bg-rose-500'
-                          }`} />
-                          <div className="text-lg font-black text-gray-800">
-                            <span className={getScoreColor(report.overallScore)}>{report.overallScore}</span>
-                            <span className="text-gray-400 text-xs">/10</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <h3
-                        className={`font-bold text-xs leading-tight mb-4 line-clamp-2 uppercase tracking-tight ${selectedReport?._id === report._id ? 'text-purple-700' : 'text-gray-700'}`}
-                        title={report.sopName}
-                      >
-                        {report.sopName}
-                      </h3>
-
-                      <div className="flex items-center justify-between mt-auto">
-                        <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest border ${getStatusColor(report.complianceStatus)}`}>
-                          {report.complianceStatus}
-                        </span>
-                        <span className="text-[9px] text-gray-400 font-medium font-mono">
-                          {new Date(report.analyzedAt).toLocaleDateString()}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                      <option value="all">All ({reports?.length || 0})</option>
+                      {reportDepartments.map((dept) => (
+                        <option key={dept} value={dept}>
+                          {dept} ({(reports ?? []).filter((r) => r.department === dept).length})
+                        </option>
+                      ))}
+                    </select>
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 text-[9px]">▼</div>
+                  </div>
+                  <span className="text-[11px] font-semibold text-gray-500">Annexures:</span>
+                  <div className="relative">
+                    <select
+                      value={reportFilterAnnexures}
+                      onChange={(e) =>
+                        setReportFilterAnnexures(
+                          e.target.value as 'all' | 'checked' | 'none' | 'not-checked' | 'linked-unread',
+                        )
+                      }
+                      className="pl-2.5 pr-7 py-1 bg-white border border-gray-200 rounded-md text-gray-700 focus:outline-none focus:ring-1 focus:ring-purple-400 text-[11px] appearance-none cursor-pointer hover:border-purple-300 transition-all font-medium min-w-[190px]"
+                    >
+                      <option value="all">All</option>
+                      <option value="checked">
+                        Done (
+                        {(reports ?? []).filter((r) => resolveAnnexureStatus(r) === 'checked').length})
+                      </option>
+                      <option value="not-checked">
+                        Connected — not checked (
+                        {(reports ?? []).filter((r) => resolveAnnexureStatus(r) === 'not-checked').length})
+                      </option>
+                      <option value="none">
+                        No annexure connected (
+                        {(reports ?? []).filter((r) => resolveAnnexureStatus(r) === 'none').length})
+                      </option>
+                      <option value="linked-unread">
+                        Linked / unread (
+                        {(reports ?? []).filter((r) => resolveAnnexureStatus(r) === 'linked-unread').length})
+                      </option>
+                    </select>
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 text-[9px]">▼</div>
+                  </div>
+                  {(reportFilterDepartment !== 'all' || reportFilterAnnexures !== 'all') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReportFilterDepartment('all');
+                        setReportFilterAnnexures('all');
+                      }}
+                      className="text-[10px] font-medium text-purple-600 hover:text-purple-800 hover:underline"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                  <span className="ml-auto text-[10px] text-gray-400">
+                    Showing {sortedReports.length} report{sortedReports.length !== 1 ? 's' : ''}
+                  </span>
                 </div>
+                <div className={`overflow-auto flex-1 ${selectedReport ? '' : 'max-h-[calc(100vh-260px)]'}`}>
+                  <table className="w-full min-w-[1000px] text-left border-collapse">
+                    <thead className="sticky top-0 z-[1] bg-gray-50 border-b border-gray-200">
+                      <tr>
+                        <ReportSortHeader label="ID" sortKey="sopIdentifier" className="w-[110px]" />
+                        <ReportSortHeader label="Title" sortKey="sopName" />
+                        <ReportSortHeader label="Department" sortKey="department" className="w-[100px]" />
+                        <th className="w-[110px] px-2 py-2 text-[10px] font-black uppercase tracking-wide text-gray-500">
+                          Annexures
+                        </th>
+                        <ReportSortHeader label="Score" sortKey="overallScore" className="w-[90px]" />
+                        <th
+                          className="w-[95px] px-2 py-2 text-[10px] font-black uppercase tracking-wide text-gray-500"
+                          title="Score from the latest Upload SOP & Re-run"
+                        >
+                          Re-run
+                        </th>
+                        <th
+                          className="w-[120px] px-2 py-2 text-[10px] font-black uppercase tracking-wide text-gray-500"
+                          title="Whether linked annexures were considered on the latest re-run"
+                        >
+                          Re-run annex.
+                        </th>
+                        <ReportSortHeader label="Status" sortKey="complianceStatus" className="w-[140px]" />
+                        <ReportSortHeader label="Date" sortKey="analyzedAt" className="w-[90px]" />
+                        <th className="w-[72px] px-2 py-2 text-[10px] font-black uppercase tracking-wide text-gray-500">
+                          History
+                        </th>
+                        <th className="w-10 px-2 py-2" aria-label="Actions" />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 bg-white">
+                      {sortedReports.length === 0 ? (
+                        <tr>
+                          <td colSpan={11} className="px-4 py-10 text-center text-sm text-gray-500">
+                            No reports match the selected filters.
+                          </td>
+                        </tr>
+                      ) : (
+                      sortedReports.map((report) => {
+                        const isSelected = selectedReport?._id === report._id;
+                        const annexStatus = resolveAnnexureStatus(report);
+                        const lastRecheck = report.latestRecheck ?? null;
+                        return (
+                          <tr
+                            key={report._id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              handleSelectReport(report);
+                              setFilterStatus('all');
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleSelectReport(report);
+                                setFilterStatus('all');
+                              }
+                            }}
+                            className={`cursor-pointer transition-colors group ${
+                              isSelected
+                                ? 'bg-purple-50 ring-1 ring-inset ring-purple-300'
+                                : 'hover:bg-purple-50/40'
+                            }`}
+                          >
+                            <td className="px-3 py-2 align-middle">
+                              <span className="inline-block text-purple-700 font-bold text-[11px] bg-purple-50 px-1.5 py-0.5 rounded border border-purple-100 font-mono whitespace-nowrap">
+                                {report.sopIdentifier}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 align-middle">
+                              <span
+                                className={`block text-[11px] font-semibold uppercase leading-snug line-clamp-2 ${isSelected ? 'text-purple-700' : 'text-gray-700'}`}
+                                title={report.sopName}
+                              >
+                                {report.sopName}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 align-middle">
+                              <span
+                                className="block text-[11px] font-medium text-gray-600 leading-snug line-clamp-2"
+                                title={report.department || '—'}
+                              >
+                                {report.department?.trim() || '—'}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 align-middle">
+                              <span
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-black uppercase tracking-wide ${annexureStatusBadgeClass(annexStatus)}`}
+                                title={annexureStatusTitle(report)}
+                              >
+                                <Paperclip className="h-2.5 w-2.5" />
+                                {annexureStatusShortLabel(annexStatus)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 align-middle whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`w-2 h-2 rounded-full shrink-0 ${
+                                  report.overallScore >= 7 ? 'bg-emerald-500' :
+                                  report.overallScore >= 4 ? 'bg-amber-500' :
+                                  'bg-rose-500'
+                                }`} />
+                                <span className={`text-sm font-black tabular-nums ${getScoreColor(report.overallScore)}`}>
+                                  {report.overallScore}
+                                </span>
+                                <span className="text-[10px] text-gray-400 font-medium">/10</span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 align-middle whitespace-nowrap">
+                              {lastRecheck ? (
+                                <div
+                                  className="flex items-center gap-1.5"
+                                  title={
+                                    lastRecheck.createdAt
+                                      ? `Last re-run ${new Date(lastRecheck.createdAt).toLocaleString()}`
+                                      : 'Latest Upload SOP & Re-run score'
+                                  }
+                                >
+                                  <span className={`text-sm font-black tabular-nums ${getScoreColor(lastRecheck.score)}`}>
+                                    {lastRecheck.score.toFixed(1)}
+                                  </span>
+                                  <span className="text-[10px] text-gray-400 font-medium">/10</span>
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-gray-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-middle">
+                              {!lastRecheck ? (
+                                <span className="text-[11px] text-gray-400">—</span>
+                              ) : !lastRecheck.annexureStatusTracked ? (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-[9px] font-black uppercase tracking-wide text-gray-600"
+                                  title="Older re-run — annexure use was not recorded"
+                                >
+                                  Unknown
+                                </span>
+                              ) : lastRecheck.annexuresRead ? (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-[9px] font-black uppercase tracking-wide text-emerald-800"
+                                  title={
+                                    lastRecheck.annexureLabels.length
+                                      ? `Annexures considered: ${lastRecheck.annexureLabels.join(', ')}`
+                                      : 'Annexures were considered on this re-run'
+                                  }
+                                >
+                                  Yes
+                                </span>
+                              ) : (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-[9px] font-black uppercase tracking-wide text-amber-800"
+                                  title="Annexures were not considered on this re-run"
+                                >
+                                  No
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-middle">
+                              <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide border whitespace-nowrap ${getStatusColor(report.complianceStatus)}`}>
+                                {report.complianceStatus}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 align-middle whitespace-nowrap">
+                              <span className="text-[11px] text-gray-500 font-mono">
+                                {new Date(report.analyzedAt).toLocaleDateString()}
+                              </span>
+                            </td>
+                            <td className="px-2 py-2 align-middle" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRecheckInitialView('history');
+                                  setRecheckTarget({
+                                    _id: report._id,
+                                    sopIdentifier: report.sopIdentifier,
+                                    sopName: report.sopName,
+                                  });
+                                  setRecheckOpen(true);
+                                }}
+                                className="inline-flex items-center gap-1 px-1.5 py-1 rounded-md text-[10px] font-bold text-purple-700 border border-purple-200 bg-purple-50 hover:bg-purple-100 transition-colors"
+                                title="View re-check history"
+                              >
+                                <History className="h-3 w-3" />
+                                History
+                              </button>
+                            </td>
+                            <td className="px-2 py-2 align-middle" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                onClick={(e) => handleDeleteReport(report._id, e)}
+                                className="p-1 hover:bg-rose-50 text-gray-300 hover:text-rose-500 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+                                title="Delete Report"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                </>
               )}
             </div>
             )}
 
             {selectedReport && (
-              <div className={`${isFullScreen ? 'h-full' : 'xl:col-span-8'} flex flex-col gap-6 overflow-hidden animate-in fade-in slide-in-from-right-4 duration-300`}>
+              <div ref={reportExportRef} className={`${isFullScreen ? 'h-full' : 'xl:col-span-8'} flex flex-col gap-2 overflow-hidden animate-in fade-in slide-in-from-right-4 duration-300`}>
 
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 relative overflow-hidden flex-shrink-0">
-                  <div className="flex flex-row justify-between items-center gap-6">
-                    <div className="flex items-center gap-6">
-                      <div className="flex items-baseline gap-1.5">
-                        <span className={`text-5xl font-black tracking-tighter ${getScoreColor(selectedReport.overallScore)}`}>
-                          {selectedReport.overallScore}
-                        </span>
-                        <span className="text-xl font-bold text-gray-400">/10</span>
-                      </div>
-                      <div className="h-10 w-px bg-gray-200" />
-                      <div className="space-y-0.5">
-                        <p className="text-purple-600 text-[10px] font-black uppercase tracking-[0.2em] leading-none">{selectedReport.department}</p>
-                        <p className={`text-lg font-black tracking-tight ${getScoreColor(selectedReport.overallScore)} leading-tight`}>
-                          {selectedReport.complianceStatus}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <div className={`w-12 h-12 rounded-full ${
-                        selectedReport.overallScore >= 7 ? 'bg-emerald-500' :
-                        selectedReport.overallScore >= 4 ? 'bg-amber-500' :
-                        'bg-rose-500'
-                      }`} />
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-2.5 pt-1 pb-1.5 relative overflow-hidden flex-shrink-0">
+                  {/* Row 1: back, SOP, guidelines, score, status, View Final SOP */}
+                  <div className="flex flex-nowrap items-center justify-between gap-2">
+                    <div className="flex flex-nowrap items-center gap-1.5 min-w-0 flex-1 overflow-x-auto">
                       <button
-                        onClick={() => setIsFullScreen(!isFullScreen)}
-                        className="p-2.5 bg-gray-50 hover:bg-gray-100 text-gray-500 rounded-xl transition-all border border-gray-200 hover:scale-110 active:scale-95"
+                        onClick={() => {
+                          setIsFullScreen(false);
+                          setSelectedReport(null);
+                        }}
+                        className="p-1 bg-gray-50 hover:bg-gray-100 text-gray-500 rounded-md transition-all border border-gray-200 shrink-0"
+                        title="Back to Generated Reports"
                       >
-                        {isFullScreen ? '↙️' : '↗️'}
+                        <ArrowLeft className="h-4 w-4" />
+                      </button>
+                      {selectedReport.sopName && (
+                        <button
+                          type="button"
+                          onClick={() => setSopPreviewOpen(true)}
+                          className="text-xs font-black text-gray-800 leading-tight shrink-0 whitespace-nowrap text-left hover:text-purple-700 hover:underline underline-offset-2 transition-colors"
+                          title="Preview source SOP document"
+                        >
+                          {selectedReport.sopIdentifier ? `${selectedReport.sopIdentifier} — ` : ''}{selectedReport.sopName}
+                        </button>
+                      )}
+                      <span
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-black uppercase tracking-wide shrink-0 ${annexureStatusBadgeClass(resolveAnnexureStatus(selectedReport))}`}
+                        title={annexureStatusTitle(selectedReport)}
+                      >
+                        <Paperclip className="h-2.5 w-2.5" />
+                        {annexureStatusLabel(resolveAnnexureStatus(selectedReport))}
+                      </span>
+                      {displayGroupedFindings.length > 0 && (
+                        <div className="flex flex-nowrap items-center gap-1 shrink-0">
+                          {displayGroupedFindings.map((group) => {
+                            const isActive = displayActiveGroupKey === group.key;
+                            const chipLabel = findingsGroupView === 'guideline'
+                              ? shortGuidelineLabel(group.key)
+                              : `Sec ${group.key}`;
+                            return (
+                              <div
+                                key={group.key}
+                                className="relative"
+                                onMouseEnter={() => setHoveredFolder(group.key)}
+                                onMouseLeave={() => setHoveredFolder((v) => (v === group.key ? null : v))}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    groupRefs.current[group.key]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                  }
+                                  className={`flex items-center gap-0.5 px-1.5 py-px rounded text-[9px] font-bold border transition-colors ${
+                                    isActive
+                                      ? 'bg-purple-600 border-purple-600 text-white shadow-sm shadow-purple-200'
+                                      : findingsGroupView === 'section'
+                                        ? 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100 hover:border-purple-300'
+                                        : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300'
+                                  }`}
+                                >
+                                  {findingsGroupView === 'guideline' ? (
+                                    <BookOpen className="h-2.5 w-2.5" />
+                                  ) : (
+                                    <Layers className="h-2.5 w-2.5" />
+                                  )}
+                                  {chipLabel} ({group.items.length})
+                                </button>
+                                {hoveredFolder === group.key && (
+                                  <div className="absolute left-0 top-full mt-1 z-20 whitespace-nowrap px-2.5 py-1.5 rounded-lg bg-gray-900 text-white text-[11px] font-semibold shadow-lg">
+                                    {findingsGroupView === 'guideline' ? group.key : `Section ${group.key}`} · {group.items.length} result{group.items.length !== 1 ? 's' : ''}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-nowrap items-center gap-2 shrink-0">
+                      <div className="flex items-center gap-1.5">
+                        <div className="flex items-baseline gap-0.5">
+                          <span className={`text-2xl font-black tracking-tighter leading-none ${getScoreColor(selectedReport.overallScore)}`}>
+                            {selectedReport.overallScore}
+                          </span>
+                          <span className="text-xs font-bold text-gray-400">/10</span>
+                        </div>
+                        <div className="h-5 w-px bg-gray-200" />
+                        <div>
+                          <p className="text-purple-600 text-[9px] font-black uppercase tracking-[0.15em] leading-none">{selectedReport.department}</p>
+                          <p className={`text-xs font-black tracking-tight leading-tight ${getScoreColor(selectedReport.overallScore)}`}>
+                            {selectedReport.complianceStatus}
+                          </p>
+                        </div>
+                        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                          selectedReport.overallScore >= 7 ? 'bg-emerald-500' :
+                          selectedReport.overallScore >= 4 ? 'bg-amber-500' :
+                          'bg-rose-500'
+                        }`} />
+                      </div>
+                      <button
+                        onClick={handleExportPdf}
+                        disabled={exportingPdf}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all shrink-0 bg-rose-600 text-white hover:bg-rose-700 shadow-sm shadow-rose-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                        title="Export the full compliance results to a PDF, keeping the same layout"
+                      >
+                        {exportingPdf ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Exporting…
+                          </>
+                        ) : (
+                          <>
+                            <FileDown className="h-3.5 w-3.5" />
+                            Export PDF
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!selectedReport) return;
+                          setRecheckInitialView('run');
+                          setRecheckTarget({
+                            _id: selectedReport._id,
+                            sopIdentifier: selectedReport.sopIdentifier,
+                            sopName: selectedReport.sopName,
+                          });
+                          setRecheckOpen(true);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all shrink-0 bg-purple-600 text-white hover:bg-purple-700 shadow-sm shadow-purple-200"
+                        title="Upload a manually revised SOP and re-run the AI compliance check"
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        Upload SOP &amp; Re-run
+                      </button>
+                      <button
+                        onClick={() => setFinalSopOpen(true)}
+                        disabled={actionableFixes.length === 0}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all shrink-0 ${
+                          actionableFixes.length > 0
+                            ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-200'
+                            : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                        }`}
+                        title="Preview all proposed changes and export the final corrected SOP"
+                      >
+                        <ScrollText className="h-3.5 w-3.5" />
+                        View Final SOP
+                        {actionableFixes.length > 0 && (
+                          <span className="px-1 py-0.5 bg-white/30 rounded text-[9px]">
+                            {approvedFixes.length}/{actionableFixes.length} approved
+                          </span>
+                        )}
                       </button>
                     </div>
                   </div>
 
-                  {selectedReport.sopName && (
-                    <div className="pt-4 mt-1 border-t border-gray-100">
-                      <p className="text-base font-black text-gray-800 leading-tight truncate">
-                        {selectedReport.sopIdentifier ? `${selectedReport.sopIdentifier} — ` : ''}{selectedReport.sopName}
-                      </p>
-                    </div>
-                  )}
-
-                  {groupedFindings.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-2 mt-3">
-                      {groupedFindings.map((group) => {
-                        const isActive = displayActiveFolder === group.folderName;
-                        return (
-                          <div
-                            key={group.folderName}
-                            className="relative"
-                            onMouseEnter={() => setHoveredFolder(group.folderName)}
-                            onMouseLeave={() => setHoveredFolder((v) => (v === group.folderName ? null : v))}
-                          >
-                            <button
-                              type="button"
-                              onClick={() =>
-                                groupRefs.current[group.folderName]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                              }
-                              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors ${
-                                isActive
-                                  ? 'bg-purple-600 border-purple-600 text-white shadow-md shadow-purple-200'
-                                  : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300'
-                              }`}
-                            >
-                              <BookOpen className="h-3 w-3" />
-                              {group.folderName} ({group.items.length})
-                            </button>
-                            {hoveredFolder === group.folderName && (
-                              <div className="absolute left-0 top-full mt-1 z-20 whitespace-nowrap px-2.5 py-1.5 rounded-lg bg-gray-900 text-white text-[11px] font-semibold shadow-lg">
-                                {group.folderName} · {group.items.length} result{group.items.length !== 1 ? 's' : ''}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between gap-3 pt-3 mt-3 border-t border-gray-100">
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1 mt-1 border-t border-gray-100">
                     <button
                       onClick={toggleSelectAllFindings}
-                      className="flex items-center gap-2 text-sm font-semibold text-gray-600 hover:text-gray-900 transition-colors"
+                      className="flex items-center gap-2 text-sm font-semibold text-gray-600 hover:text-gray-900 transition-colors shrink-0"
                     >
                       {allFindingsSelected ? (
                         <CheckSquare className="h-5 w-5 text-purple-600" />
@@ -2558,10 +3279,134 @@ export default function ComplianceEnginePage() {
                       )}
                     </button>
 
+                    <div className="flex flex-wrap items-center justify-center gap-1.5 flex-1 min-w-0">
+                      <div className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-blue-200 bg-blue-50">
+                        <ClipboardList className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                        <span className="text-[9px] font-bold text-blue-600 uppercase">Total</span>
+                        <span className="text-sm font-black text-gray-800 tabular-nums">{reportStatusTotals.total}</span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setFilterStatus(filterStatus === 'compliant' ? 'all' : 'compliant')}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-all ${
+                          filterStatus === 'compliant' ? 'bg-emerald-100 border-emerald-400 ring-1 ring-emerald-300' : 'bg-emerald-50 border-emerald-200 hover:border-emerald-400'
+                        }`}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                        <span className="text-[9px] font-bold text-emerald-700 uppercase">Compliant</span>
+                        <span className="text-sm font-black text-emerald-700 tabular-nums">{reportStatusTotals.compliant}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setFilterStatus(filterStatus === 'partial' ? 'all' : 'partial')}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-all ${
+                          filterStatus === 'partial' ? 'bg-amber-100 border-amber-400 ring-1 ring-amber-300' : 'bg-amber-50 border-amber-200 hover:border-amber-400'
+                        }`}
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                        <span className="text-[9px] font-bold text-amber-700 uppercase">Partial</span>
+                        <span className="text-sm font-black text-amber-700 tabular-nums">
+                          {reportStatusTotals.partial}
+                          <span className="text-[9px] font-bold text-amber-500 ml-0.5">({statusPct(reportStatusTotals.partial)}%)</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setFilterStatus(filterStatus === 'non-compliant' ? 'all' : 'non-compliant')}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-all ${
+                          filterStatus === 'non-compliant' ? 'bg-rose-100 border-rose-400 ring-1 ring-rose-300' : 'bg-rose-50 border-rose-200 hover:border-rose-400'
+                        }`}
+                      >
+                        <XCircle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                        <span className="text-[9px] font-bold text-rose-700 uppercase">Non-Compliant</span>
+                        <span className="text-sm font-black text-rose-700 tabular-nums">
+                          {reportStatusTotals.nonCompliant}
+                          <span className="text-[9px] font-bold text-rose-400 ml-0.5">({statusPct(reportStatusTotals.nonCompliant)}%)</span>
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      <div className="flex items-center rounded-md border border-gray-200 bg-white overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setFindingsGroupView('guideline')}
+                          className={`flex items-center gap-1 px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors ${
+                            findingsGroupView === 'guideline'
+                              ? 'bg-blue-600 text-white'
+                              : 'text-gray-600 hover:bg-gray-50'
+                          }`}
+                          title="Group findings by regulatory guideline"
+                        >
+                          <BookOpen className="h-3 w-3" />
+                          Guideline
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFindingsGroupView('section')}
+                          className={`flex items-center gap-1 px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors border-l border-gray-200 ${
+                            findingsGroupView === 'section'
+                              ? 'bg-purple-600 text-white'
+                              : 'text-gray-600 hover:bg-gray-50'
+                          }`}
+                          title="Group findings by SOP section"
+                        >
+                          <Layers className="h-3 w-3" />
+                          Section
+                        </button>
+                      </div>
+
+                      <div className="relative" ref={findingsSortRef}>
+                        <button
+                          type="button"
+                          onClick={() => setFindingsSortOpen((v) => !v)}
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wide transition-colors ${
+                            findingsSortOpen
+                              ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                              : 'bg-white border-gray-200 text-gray-600 hover:border-indigo-300 hover:text-indigo-700'
+                          }`}
+                          title="Sort findings"
+                        >
+                          <ArrowUpDown className="h-3 w-3" />
+                          Sort
+                          <span className="text-[9px] font-black text-indigo-500 normal-case">
+                            {FINDINGS_SORT_LABELS[findingsSortKey]} {findingsSortDir === 'asc' ? '↑' : '↓'}
+                          </span>
+                        </button>
+                        {findingsSortOpen && (
+                          <div className="absolute right-0 top-full mt-1 z-30 min-w-[10.5rem] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                            {(Object.keys(FINDINGS_SORT_LABELS) as FindingsSortKey[]).map((key) => {
+                              const active = findingsSortKey === key;
+                              return (
+                                <button
+                                  key={key}
+                                  type="button"
+                                  onClick={() => toggleFindingsSort(key)}
+                                  className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[11px] font-semibold transition-colors ${
+                                    active ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  <span>{FINDINGS_SORT_LABELS[key]}</span>
+                                  {active && (
+                                    <span className="text-[10px] font-black text-indigo-500">
+                                      {findingsSortDir === 'asc' ? '↑' : '↓'}
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
                     <button
                       onClick={() => setShowConsolidatedSummary(true)}
                       disabled={selectedFindingIds.size === 0}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold transition-all shrink-0 ${
                         selectedFindingIds.size > 0
                           ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-md shadow-purple-200'
                           : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
@@ -2573,239 +3418,133 @@ export default function ComplianceEnginePage() {
                         <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">{selectedFindingIds.size}</span>
                       )}
                     </button>
-
-                    {/* View Final SOP with all fixes */}
-                    {(() => {
-                      const actionableFixes = (selectedReport?.findings ?? []).filter(
-                        (f) =>
-                          (f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant') &&
-                          (f.suggestedText || f.suggestedAction) &&
-                          f.sopTextSnippet?.trim(),
-                      );
-                      return (
-                        <button
-                          onClick={() => setFinalSopOpen(true)}
-                          disabled={actionableFixes.length === 0}
-                          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                            actionableFixes.length > 0
-                              ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-200'
-                              : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                          }`}
-                          title="Preview all proposed changes and export the final corrected SOP"
-                        >
-                          <ScrollText className="h-3.5 w-3.5" />
-                          View Final SOP
-                          {actionableFixes.length > 0 && (
-                            <span className="ml-1 px-1.5 py-0.5 bg-white/30 rounded text-[10px]">
-                              {actionableFixes.length} fix{actionableFixes.length !== 1 ? 'es' : ''}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })()}
                   </div>
                 </div>
 
-                <div ref={findingsScrollRef} className="flex-1 overflow-y-auto pr-2 space-y-6 pb-10">
+                <div ref={findingsScrollRef} className="flex-1 overflow-y-auto pr-2 space-y-1 pb-6">
 
-                  <div className="mb-6">
-                    <label className="block text-sm font-medium text-gray-600 mb-2">Filter by Guideline Folder</label>
-                    <select
-                      value={filterGuideline}
-                      onChange={(e) => setFilterGuideline(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-500/30 text-sm font-medium"
-                    >
-                      <option value="all">All Guidelines ({selectedReport.findings?.length || 0})</option>
-                      {folders.filter((f) => f.guidelineCount > 0).map((folder) => {
-                        const folderFindings = (selectedReport.findings || []).filter((f) => f.folderName === folder.folderName);
-                        return (
-                          <option key={folder.folderName} value={folder.folderName}>
-                            {folder.folderName} ({folderFindings.length})
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="p-6 bg-blue-50 rounded-2xl border border-blue-200 flex flex-col justify-between">
-                      <div className="flex justify-between items-center mb-4">
-                        <p className="text-xs font-bold text-blue-600 uppercase tracking-widest">Total Checked</p>
-                        <span className="text-2xl">📋</span>
-                      </div>
-                      <p className="text-4xl font-black text-gray-800">{selectedReport.findings?.length || 0}</p>
-                    </div>
-
-                    <button
-                      onClick={() => setFilterStatus(filterStatus === 'compliant' ? 'all' : 'compliant')}
-                      className={`p-6 rounded-2xl border transition-all text-left flex flex-col justify-between ${
-                        filterStatus === 'compliant' ? 'bg-emerald-100 border-emerald-400 ring-2 ring-emerald-300 shadow-md' : 'bg-emerald-50 border-emerald-200 hover:border-emerald-400'
-                      }`}
-                    >
-                      <div className="flex justify-between items-center mb-4">
-                        <p className="text-xs font-bold text-emerald-700 uppercase tracking-widest">Compliant</p>
-                        <span className="text-2xl">✅</span>
-                      </div>
-                      <p className="text-4xl font-black text-emerald-700">{selectedReport.compliantCount}</p>
-                    </button>
-
-                    <button
-                      onClick={() => setFilterStatus(filterStatus === 'partial' ? 'all' : 'partial')}
-                      className={`p-6 rounded-2xl border transition-all text-left flex flex-col justify-between ${
-                        filterStatus === 'partial' ? 'bg-amber-100 border-amber-400 ring-2 ring-amber-300 shadow-md' : 'bg-amber-50 border-amber-200 hover:border-amber-400'
-                      }`}
-                    >
-                      <div className="flex justify-between items-center mb-4">
-                        <p className="text-xs font-bold text-amber-700 uppercase tracking-widest">Partial</p>
-                        <span className="text-2xl">⚠️</span>
-                      </div>
-                      <div className="flex items-baseline gap-2">
-                        <p className="text-4xl font-black text-amber-700">{selectedReport.partialCount}</p>
-                        <p className="text-xs font-bold text-amber-500 font-mono">
-                          ({Math.round((selectedReport.partialCount / (selectedReport.findings?.length || 1)) * 100)}%)
-                        </p>
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => setFilterStatus(filterStatus === 'non-compliant' ? 'all' : 'non-compliant')}
-                      className={`p-6 rounded-2xl border transition-all text-left flex flex-col justify-between ${
-                        filterStatus === 'non-compliant' ? 'bg-rose-100 border-rose-400 ring-2 ring-rose-300 shadow-md' : 'bg-rose-50 border-rose-200 hover:border-rose-400'
-                      }`}
-                    >
-                      <div className="flex justify-between items-center mb-4">
-                        <p className="text-xs font-bold text-rose-700 uppercase tracking-widest">Non-Compliant</p>
-                        <span className="text-2xl">❌</span>
-                      </div>
-                      <div className="flex items-baseline gap-2">
-                        <p className="text-4xl font-black text-rose-700">{selectedReport.nonCompliantCount}</p>
-                        <p className="text-xs font-bold text-rose-400 font-mono">
-                          ({Math.round((selectedReport.nonCompliantCount / (selectedReport.findings?.length || 1)) * 100)}%)
-                        </p>
-                      </div>
-                    </button>
-                  </div>
-
-                  <div className="bg-white rounded-2xl border border-gray-200 p-5">
-                    <div className="flex justify-between items-center mb-3">
-                      <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">Compliance Distribution</p>
-                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">{selectedReport.findings?.length || 0} applicable clauses</p>
-                    </div>
-                    <div className="h-4 w-full bg-gray-100 rounded-full overflow-hidden flex shadow-inner border border-gray-200">
-                      <div
-                        className="bg-emerald-500 h-full transition-all duration-1000 flex items-center justify-center text-[10px] font-bold text-white"
-                        style={{ width: `${(selectedReport.compliantCount / (selectedReport.findings?.length || 1)) * 100}%` }}
-                      >
-                        {selectedReport.compliantCount > 0 && Math.round((selectedReport.compliantCount / (selectedReport.findings?.length || 1)) * 100) > 5 && `${Math.round((selectedReport.compliantCount / (selectedReport.findings?.length || 1)) * 100)}%`}
-                      </div>
-                      <div
-                        className="bg-amber-500 h-full transition-all duration-1000 flex items-center justify-center text-[10px] font-bold text-white"
-                        style={{ width: `${(selectedReport.partialCount / (selectedReport.findings?.length || 1)) * 100}%` }}
-                      >
-                        {selectedReport.partialCount > 0 && Math.round((selectedReport.partialCount / (selectedReport.findings?.length || 1)) * 100) > 5 && `${Math.round((selectedReport.partialCount / (selectedReport.findings?.length || 1)) * 100)}%`}
-                      </div>
-                      <div
-                        className="bg-rose-500 h-full transition-all duration-1000 flex items-center justify-center text-[10px] font-bold text-white shadow-[inset_0_0_10px_rgba(0,0,0,0.1)]"
-                        style={{ width: `${(selectedReport.nonCompliantCount / (selectedReport.findings?.length || 1)) * 100}%` }}
-                      >
-                        {selectedReport.nonCompliantCount > 0 && Math.round((selectedReport.nonCompliantCount / (selectedReport.findings?.length || 1)) * 100) > 5 && `${Math.round((selectedReport.nonCompliantCount / (selectedReport.findings?.length || 1)) * 100)}%`}
-                      </div>
-                    </div>
-                  </div>
-
-                  {applicableFindings.size > 0 && (
-                    <div className="bg-purple-50 border-2 border-purple-300 rounded-2xl p-5 flex justify-between items-center shadow-md">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-purple-600 flex items-center justify-center text-white font-black text-lg shadow-md">
-                          {applicableFindings.size}
-                        </div>
-                        <div>
-                          <p className="text-purple-700 font-bold text-sm">
-                            {applicableFindings.size} finding{applicableFindings.size !== 1 ? 's' : ''} selected
-                          </p>
-                          <p className="text-purple-600 text-xs">Ready to generate compiled SOP text</p>
-                        </div>
-                      </div>
-                      <div className="flex gap-3">
-                        <button
-                          onClick={() => setApplicableFindings(new Set())}
-                          className="px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 rounded-lg text-sm font-medium transition-all border border-gray-200"
-                        >
-                          Clear Selection
-                        </button>
-                        <button
-                          onClick={submitApplicableFindings}
-                          disabled={submittingApplicable}
-                          className="px-6 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-sm font-bold uppercase tracking-wider shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                        >
-                          {submittingApplicable ? (
-                            <>
-                              <span className="animate-spin">⏳</span>
-                              <span>Processing...</span>
-                            </>
-                          ) : (
-                            <>
-                              <span>📝</span>
-                              <span>Generate Compiled SOP Text</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                    <div className="p-5 border-b border-gray-100 bg-white flex items-center justify-between">
-                      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-3">
-                        <span className="text-xl">📔</span>
-                        Findings with Guideline References
-                        {filterStatus !== 'all' && (
-                          <span className="text-[10px] font-black text-white px-2.5 py-1 bg-purple-600 rounded-md uppercase tracking-[0.2em]">
-                            {filterStatus}
-                          </span>
-                        )}
-                      </h3>
-                      {filterStatus !== 'all' && (
-                        <button
-                          onClick={() => setFilterStatus('all')}
-                          className="text-xs font-medium text-purple-600 hover:text-purple-700 hover:underline"
-                        >
-                          Clear Filters
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="p-6 space-y-6 bg-gray-50 min-h-[400px]">
-                      {loadingFullReport ? (
+                  <div>
+                    <div className="space-y-2 min-h-[200px] pl-1">
+                      {loadingFullReport || findingsPending ? (
                         <div className="text-center py-20">
                           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-3" />
                           <p className="text-gray-500 text-sm">Loading full report...</p>
                         </div>
+                      ) : fullReportLoadError ? (
+                        <div className="text-center py-20">
+                          <p className="text-rose-600 text-sm mb-3">{fullReportLoadError}</p>
+                          <button
+                            type="button"
+                            onClick={() => selectedReport && handleSelectReport(selectedReport)}
+                            className="text-purple-600 font-medium hover:underline text-sm"
+                          >
+                            Retry
+                          </button>
+                        </div>
                       ) : selectedReport.findings && selectedReport.findings.length > 0 ? (
-                        groupedFindings.map((group) => (
-                          <div key={group.folderName} className="space-y-4">
+                        displayGroupedFindings.map((group) => {
+                          const isGroupOpen = !collapsedFindingGroups.has(group.key);
+                          return (
+                          <div key={group.key} className="space-y-1">
                             <div
-                              ref={(el) => { groupRefs.current[group.folderName] = el; }}
-                              data-folder={group.folderName}
-                              className="flex items-center gap-3 pt-2 scroll-mt-4"
+                              ref={(el) => { groupRefs.current[group.key] = el; }}
+                              data-group-key={group.key}
+                              className="flex flex-wrap w-fit items-center gap-1 scroll-mt-2"
                             >
-                              <span className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 border border-blue-300 rounded-lg text-xs font-black text-blue-800 uppercase tracking-wider">
-                                <BookOpen className="h-3.5 w-3.5" />
-                                {group.folderName}
-                              </span>
-                              <span className="text-[11px] text-gray-400 font-bold">
-                                {group.items.length} result{group.items.length !== 1 ? 's' : ''}
-                              </span>
-                              <div className="flex-1 h-px bg-gray-200" />
-                            </div>
-
-                            {group.items.map(({ f, i, serial }) => (
-                              <div
-                                key={f.gapId ?? i}
-                                className={`transition-all duration-200 rounded-2xl ${
-                                  selectedFindingIds.has(i) ? 'ring-2 ring-purple-400 ring-offset-2 ring-offset-gray-50' : ''
+                              <button
+                                type="button"
+                                onClick={() => toggleFindingGroup(group.key)}
+                                className="p-px rounded border border-gray-200 bg-white text-gray-500 hover:text-blue-700 hover:border-blue-300 transition-colors shrink-0"
+                                aria-expanded={isGroupOpen}
+                                aria-label={isGroupOpen ? `Collapse ${group.key}` : `Expand ${group.key}`}
+                              >
+                                {isGroupOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleFindingGroup(group.key)}
+                                className={`flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide transition-colors ${
+                                  findingsGroupView === 'section'
+                                    ? 'text-purple-800 hover:text-purple-600'
+                                    : 'text-blue-800 hover:text-blue-600'
                                 }`}
                               >
+                                {findingsGroupView === 'section' ? (
+                                  <>
+                                    <Layers className="h-2.5 w-2.5" />
+                                    Section {group.key}
+                                  </>
+                                ) : (
+                                  <>
+                                    <BookOpen className="h-2.5 w-2.5" />
+                                    {shortGuidelineLabel(group.key)}
+                                  </>
+                                )}
+                              </button>
+                              <span className="text-[9px] text-gray-400 font-semibold shrink-0">
+                                {group.items.length} result{group.items.length !== 1 ? 's' : ''}
+                              </span>
+                              {isGroupOpen && group.items[0] && (
+                                <div
+                                  ref={(el) => { sectionRefs.current[`${group.key}::${group.items[0].subLabel}`] = el; }}
+                                  className="shrink-0"
+                                >
+                                <button
+                                  type="button"
+                                  onClick={() => scrollToFindingSubGroup(group.key, group.items[0].subLabel)}
+                                  className={`flex items-center gap-0.5 px-1 py-px rounded text-[9px] font-bold uppercase tracking-wide transition-colors cursor-pointer shrink-0 ${
+                                    findingsGroupView === 'section'
+                                      ? 'bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300'
+                                      : 'bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-100 hover:border-purple-300'
+                                  }`}
+                                  title={findingsGroupView === 'section' ? group.items[0].subLabel : `Go to section ${group.items[0].subLabel}`}
+                                >
+                                  {findingsGroupView === 'section' ? (
+                                    <>
+                                      <BookOpen className="h-2 w-2" />
+                                      {group.items[0].subLabel}
+                                    </>
+                                  ) : (
+                                    <>Section {group.items[0].subLabel}</>
+                                  )}
+                                </button>
+                                </div>
+                              )}
+                            </div>
+
+                            {isGroupOpen && group.items.map(({ f, i, serial, subLabel, isNewSubGroup }, idx) => (
+                              <div key={f.gapId ?? i}>
+                                {isNewSubGroup && idx > 0 && (
+                                  <div
+                                    ref={(el) => { sectionRefs.current[`${group.key}::${subLabel}`] = el; }}
+                                    className="inline-flex w-fit items-center gap-1 scroll-mt-2"
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => scrollToFindingSubGroup(group.key, subLabel)}
+                                      className={`flex items-center gap-0.5 px-1 py-px rounded text-[9px] font-bold uppercase tracking-wide transition-colors cursor-pointer ${
+                                        findingsGroupView === 'section'
+                                          ? 'bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300'
+                                          : 'bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-100 hover:border-purple-300'
+                                      }`}
+                                      title={findingsGroupView === 'section' ? subLabel : `Go to section ${subLabel}`}
+                                    >
+                                      {findingsGroupView === 'section' ? (
+                                        <>
+                                          <BookOpen className="h-2 w-2" />
+                                          {subLabel}
+                                        </>
+                                      ) : (
+                                        <>Section {subLabel}</>
+                                      )}
+                                    </button>
+                                  </div>
+                                )}
+                                <div
+                                  className={`transition-all duration-200 rounded-xl ${
+                                    selectedFindingIds.has(i) ? 'ring-2 ring-purple-400 ring-offset-1 ring-offset-gray-50' : ''
+                                  }`}
+                                >
                                 <FindingCard
                                   finding={f}
                                   sopId={selectedReport.sopId ?? sops.find(s => s.identifier === selectedReport.sopIdentifier)?._id}
@@ -2818,11 +3557,7 @@ export default function ComplianceEnginePage() {
                                   }}
                                   index={i}
                                   serialNumber={serial}
-                                  defaultExpanded={
-                                    f.complianceLevel === 'partial' ||
-                                    f.complianceLevel === 'non-compliant' ||
-                                    f.complianceLevel === 'not-applicable'
-                                  }
+                                  defaultExpanded={true}
                                   isSelected={selectedFindingIds.has(i)}
                                   onToggleSelect={(idx) => {
                                     const next = new Set(selectedFindingIds);
@@ -2831,16 +3566,20 @@ export default function ComplianceEnginePage() {
                                     setSelectedFindingIds(next);
                                   }}
                                   onToggleApplicable={handleToggleApplicable}
-                                  isApplicable={applicableFindings.has(f.gapId ?? f._id ?? `finding-${i}`)}
+                                  isApplicable={isApprovedFix(f)}
                                   showCheckbox
                                   onReviewStatusChange={f.gapId ? handleReviewStatusChange : undefined}
                                   onApplyFix={f.gapId ? handleApplyFix : undefined}
                                   applyingFix={applyingFixGapId === f.gapId}
+                                  onSectionClick={() => scrollToFindingSubGroup(group.key, subLabel)}
+                                  traceabilityMatrix={selectedReport.traceabilityMatrix}
                                 />
+                                </div>
                               </div>
                             ))}
                           </div>
-                        ))
+                          );
+                        })
                       ) : (
                         <div className="text-center py-20 text-gray-400">
                           <p>No findings found.</p>
@@ -2905,7 +3644,7 @@ export default function ComplianceEnginePage() {
                   className="p-2 hover:bg-gray-100 rounded-xl text-gray-400 hover:text-gray-700 transition-all mr-2"
                   title={isSummaryFullScreen ? 'Exit Full Screen' : 'Full Screen'}
                 >
-                  {isSummaryFullScreen ? '↙️' : '↗️'}
+                  {isSummaryFullScreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                 </button>
                 <button
                   onClick={() => {
@@ -2958,19 +3697,13 @@ export default function ComplianceEnginePage() {
       {/* Final SOP Modal — aggregates all actionable fixes */}
       {finalSopOpen && selectedReport && (() => {
         const resolvedSopId = selectedReport.sopId ?? sops.find(s => s.identifier === selectedReport.sopIdentifier)?._id ?? undefined;
-        const finalSopFixes = (selectedReport.findings ?? [])
-          .filter(f =>
-            (f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant') &&
-            f.sopTextSnippet?.trim() &&
-            (f.suggestedText?.trim() || f.suggestedAction?.trim()),
-          )
-          .map(f => ({
-            originalText: f.sopTextSnippet!,
-            replacementText: f.suggestedText?.trim() || f.suggestedAction!,
-            section: f.sopSectionAffected ?? '',
-            clauseNumber: f.clauseNumber ?? '',
-            clauseTitle: f.clauseTitle ?? '',
-          }));
+        const finalSopFixes = approvedFixes.map((f) => ({
+          originalText: f.sopTextSnippet!,
+          replacementText: f.suggestedText?.trim() || f.suggestedAction!,
+          section: f.sopSectionAffected ?? '',
+          clauseNumber: f.clauseNumber ?? '',
+          clauseTitle: f.clauseTitle ?? '',
+        }));
         return (
           <FinalSopModal
             isOpen={finalSopOpen}
@@ -2980,9 +3713,45 @@ export default function ComplianceEnginePage() {
             sopName={selectedReport.sopName}
             department={selectedReport.department}
             fixes={finalSopFixes}
+            pendingApprovalCount={pendingApprovalFixCount}
+            onApproveAll={handleApproveAllFixes}
+            onRerunCompliance={handleRerunComplianceForReport}
+            rerunning={rerunningCompliance}
           />
         );
       })()}
+
+      {sopPreviewOpen && selectedReport && (
+        <SopSourcePreviewModal
+          isOpen={sopPreviewOpen}
+          onClose={() => setSopPreviewOpen(false)}
+          sopIdentifier={selectedReport.sopIdentifier}
+          sopName={selectedReport.sopName}
+          language={sops.find((s) => s.identifier === selectedReport.sopIdentifier)?.language ?? 'English'}
+        />
+      )}
+
+      {recheckOpen && recheckTarget && (
+        <RecheckSopModal
+          key={`${recheckTarget._id}-${recheckInitialView}`}
+          isOpen={recheckOpen}
+          onClose={() => {
+            setRecheckOpen(false);
+            setRecheckTarget(null);
+            setRecheckInitialView('run');
+          }}
+          reportId={recheckTarget._id}
+          sopIdentifier={recheckTarget.sopIdentifier}
+          sopName={recheckTarget.sopName}
+          initialView={recheckInitialView}
+          onRechecked={() => {
+            void fetchReports();
+            if (selectedReport?._id === recheckTarget._id) {
+              handleSelectReport(selectedReport);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

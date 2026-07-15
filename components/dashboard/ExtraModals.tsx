@@ -273,7 +273,108 @@ export function AdminToolsModal({
   const [relinkDept, setRelinkDept] = useState("");
   const [relinking, setRelinking] = useState(false);
 
-  if (!isAdmin) return null;
+  // ── Files folder import ──
+  const [importPreview, setImportPreview] = useState<{
+    importDir: string;
+    total: number;
+    main: number;
+    annexure: number;
+    prior: number;
+    pending: number;
+    pendingMain: number;
+    pendingAnnexure: number;
+    pendingPrior: number;
+    duplicate: number;
+    obsolete: number;
+  } | null>(null);
+  const [importRunning, setImportRunning] = useState(false);
+  const [importJobId, setImportJobId] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<{
+    status: string;
+    phase: string;
+    percent: number;
+    totals: Record<string, number>;
+    files: Array<{ relativePath: string; fileName: string; status: string; message?: string }>;
+    error?: string;
+  } | null>(null);
+  const [exportingToFiles, setExportingToFiles] = useState(false);
+
+  const loadImportPreview = async () => {
+    try {
+      const res = await fetch("/api/sop/files-import/preview");
+      const data = await res.json();
+      if (res.ok) setImportPreview(data);
+      else setMessage(data.error ?? "Failed to preview import folder");
+    } catch {
+      setMessage("Failed to preview import folder");
+    }
+  };
+
+  useEffect(() => {
+    if (!isAdmin || !importJobId || !importRunning) return;
+    const poll = async () => {
+      const res = await fetch(`/api/sop/files-import/status?jobId=${importJobId}`);
+      const data = await res.json();
+      if (!res.ok || !data.job) return;
+      setImportStatus(data.job);
+      if (data.job.status === "completed" || data.job.status === "failed") {
+        setImportRunning(false);
+        const t = data.job.totals;
+        setMessage(
+          data.job.status === "failed"
+            ? `Import failed: ${data.job.error ?? "unknown error"}`
+            : `Import done: ${t.imported} imported, ${t.skipped} skipped, ${t.failed} failed, ${t.annexures} annexures`,
+        );
+        void loadImportPreview();
+        onSuccess?.();
+      }
+    };
+    const id = setInterval(() => void poll(), 2000);
+    void poll();
+    return () => clearInterval(id);
+  }, [isAdmin, importJobId, importRunning, onSuccess]);
+
+  const runFilesImport = async () => {
+    setImportRunning(true);
+    setMessage("Starting files folder import…");
+    try {
+      const res = await fetch("/api/sop/files-import/run", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error ?? "Import failed to start");
+        setImportRunning(false);
+        return;
+      }
+      setImportJobId(data.jobId);
+      setMessage(`Import started — scanning ${data.importDir}`);
+      onSuccess?.();
+    } catch {
+      setMessage("Import failed to start");
+      setImportRunning(false);
+    }
+  };
+
+  const runExportToFiles = async () => {
+    setExportingToFiles(true);
+    setMessage("Exporting all SOP documents to files/ folder…");
+    try {
+      const res = await fetch("/api/admin/export-sops-to-files", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error ?? "Export failed");
+        return;
+      }
+      setMessage(
+        `Exported to files/: ${data.written} written, ${data.skipped} unchanged, ${data.failed} failed ` +
+          `(${data.currentFiles} current, ${data.priorFiles} prior in versions/)`,
+      );
+      void loadImportPreview();
+    } catch {
+      setMessage("Export to files/ failed");
+    } finally {
+      setExportingToFiles(false);
+    }
+  };
 
   const runRelinkBunny = async () => {
     setRelinking(true);
@@ -441,6 +542,36 @@ export function AdminToolsModal({
         >
           {backfillingNames ? "Extracting names…" : "Fix SOP Names (backfill from files & content)"}
         </button>
+
+        <div className="rounded border border-emerald-200 bg-emerald-50/60 p-3">
+          <p className="text-xs font-bold text-emerald-900">Files Folder Import</p>
+          <p className="mt-0.5 text-[10px] leading-snug text-emerald-800">
+            Copy SOPs, prior versions, and annexures as flat files into files/ (current at root,
+            prior in files/versions/). Then run import — duplicates are skipped.
+          </p>
+          {importPreview && (
+            <p className="mt-1 text-[10px] text-emerald-900">
+              {importPreview.importDir}: {importPreview.total} file(s) — {importPreview.pending} pending
+              ({importPreview.pendingMain} SOPs, {importPreview.pendingAnnexure} annexures,{" "}
+              {importPreview.pendingPrior} prior), {importPreview.duplicate} duplicate
+              {importPreview.obsolete > 0 ? `, ${importPreview.obsolete} obsolete` : ""}
+            </p>
+          )}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Btn onClick={() => void loadImportPreview()}>Refresh Preview</Btn>
+            <Btn disabled={exportingToFiles} onClick={() => void runExportToFiles()}>
+              {exportingToFiles ? "Exporting…" : "Export DB → files/"}
+            </Btn>
+            <Btn variant="primary" disabled={importRunning} onClick={() => void runFilesImport()}>
+              {importRunning ? "Importing…" : "Run Import"}
+            </Btn>
+          </div>
+          {importStatus && importRunning && (
+            <p className="mt-2 text-[10px] text-emerald-900">
+              {importStatus.phase} ({importStatus.percent}%)
+            </p>
+          )}
+        </div>
 
         <hr className="border-slate-200" />
 

@@ -1,12 +1,23 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+import dynamic from 'next/dynamic';
+import { RefreshCw, ShieldCheck, Paperclip } from 'lucide-react';
 import FindingCard from '../../components/FindingCard';
 import { getScoreColorClass } from '@/lib/complianceFormatter';
+import {
+  annexureStatusBadgeClass,
+  annexureStatusLabel,
+  annexureStatusTitle,
+  resolveAnnexureStatus,
+} from '@/lib/annexureAuditDisplay';
+
+const RecheckSopModal = dynamic(() => import('@/components/compliance/RecheckSopModal'), { ssr: false });
 
 interface ComplianceFinding {
   _id?: string;
+  guidelineId?: string;
   guidelineName: string;
   folderName?: string;
   clauseNumber: string;
@@ -44,6 +55,7 @@ interface AuditCompleteness {
 
 interface ComplianceReport {
   _id: string;
+  sopId?: string;
   sopIdentifier: string;
   sopName: string;
   department: string;
@@ -55,7 +67,21 @@ interface ComplianceReport {
   nonCompliantCount: number;
   auditCompleteness?: AuditCompleteness;
   findings: ComplianceFinding[];
+  traceabilityMatrix?: Array<{
+    clauseNumber: string;
+    clauseTitle: string;
+    clauseText: string;
+    guidelineName: string;
+    folderName: string;
+  }>;
   analyzedAt: string;
+  annexuresChecked?: boolean;
+  annexureStatus?: 'none' | 'checked' | 'not-checked' | 'linked-unread';
+  linkedAnnexureCount?: number;
+  liveLinkedAnnexureCount?: number;
+  annexureChars?: number;
+  annexuresIncluded?: { label: string; fileName: string; chars: number }[];
+  annexuresSkipped?: { label: string; fileName: string; reason: string }[];
 }
 
 export default function ComplianceReportDetailPage() {
@@ -71,11 +97,14 @@ export default function ComplianceReportDetailPage() {
   const [hideNotApplicable, setHideNotApplicable] = useState(true);
   const [hideFailedFindings, setHideFailedFindings] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [recheckOpen, setRecheckOpen] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerationError, setRegenerationError] = useState('');
 
-  useEffect(() => {
+  const loadReport = useCallback((fresh = false) => {
     if (!id) return;
     setLoading(true);
-    fetch(`/api/compliance/analyze?reportId=${id}`)
+    fetch(`/api/compliance/analyze?reportId=${id}${fresh ? '&refresh=1' : ''}`)
       .then(r => r.json())
       .then(data => {
         if (data.success) setReport(data.report);
@@ -84,6 +113,49 @@ export default function ComplianceReportDetailPage() {
       .catch(() => setError('Failed to load report'))
       .finally(() => setLoading(false));
   }, [id]);
+
+  const regenerateWithAnnexures = useCallback(async () => {
+    if (!report?.sopId || regenerating) return;
+    if (!window.confirm('Regenerate this compliance report using the main SOP and all linked annexures?')) return;
+
+    setRegenerating(true);
+    setRegenerationError('');
+    try {
+      const guidelineIds = [
+        ...new Set(
+          report.findings
+            .map((finding) => finding.guidelineId)
+            .filter((guidelineId): guidelineId is string => Boolean(guidelineId)),
+        ),
+      ];
+      const response = await fetch('/api/compliance/analyze-v3', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sopId: report.sopId,
+          guidelineIds,
+          includeAnnexures: true,
+          requireAnnexures: true,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) {
+        throw new Error(data.userMessage || data.error || 'Failed to regenerate the report');
+      }
+      await loadReport(true);
+    } catch (regenerateError) {
+      setRegenerationError(
+        regenerateError instanceof Error ? regenerateError.message : 'Failed to regenerate the report',
+      );
+    } finally {
+      setRegenerating(false);
+    }
+  }, [loadReport, regenerating, report]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronize the page with the report API on route changes
+    loadReport();
+  }, [loadReport]);
 
   const guidelineFolders = useMemo(() => {
     if (!report?.findings) return [];
@@ -148,12 +220,28 @@ export default function ComplianceReportDetailPage() {
   return (
     <div className="min-h-screen bg-[#f8f9fa]">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-2 py-1 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h1 className="text-xl font-bold text-gray-800">Compliance Report</h1>
             <p className="text-sm text-gray-500">{report.sopIdentifier} — {report.sopName}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={regenerateWithAnnexures}
+              disabled={regenerating || !report.sopId}
+              className="flex items-center gap-1.5 px-4 py-2 bg-blue-50 text-blue-700 rounded-lg border border-blue-200 font-medium text-sm hover:bg-blue-100 transition-all disabled:cursor-not-allowed disabled:opacity-60"
+              title={!report.sopId ? 'This report is not linked to an SOP record' : undefined}
+            >
+              <RefreshCw className={`h-4 w-4 ${regenerating ? 'animate-spin' : ''}`} />
+              {regenerating ? 'Regenerating…' : 'Regenerate with Annexures'}
+            </button>
+            <button
+              onClick={() => setRecheckOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-200 font-medium text-sm hover:bg-emerald-100 transition-all"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              Re-check Revised SOP
+            </button>
             <button
               onClick={() => router.push(`/compliance/applicable?reportId=${id}`)}
               className="px-4 py-2 bg-purple-50 text-purple-700 rounded-lg border border-purple-200 font-medium text-sm hover:bg-purple-100 transition-all"
@@ -171,17 +259,55 @@ export default function ComplianceReportDetailPage() {
       </header>
 
       <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+        {regenerationError && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {regenerationError}
+          </div>
+        )}
+
         {/* Report header */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
           <div className="flex items-start justify-between mb-6">
             <div>
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-2 flex-wrap">
                 <span className="text-purple-700 font-bold bg-purple-50 px-3 py-1 rounded-lg border border-purple-100 text-sm">{report.sopIdentifier}</span>
                 <span className={`px-3 py-1 rounded-lg border text-sm font-bold ${getStatusColor(report.complianceStatus)}`}>{report.complianceStatus}</span>
+                <span
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-bold ${annexureStatusBadgeClass(resolveAnnexureStatus(report))}`}
+                  title={annexureStatusTitle(report)}
+                >
+                  <Paperclip className="h-3.5 w-3.5" />
+                  {annexureStatusLabel(resolveAnnexureStatus(report))}
+                </span>
               </div>
               <h2 className="text-2xl font-bold text-gray-800">{report.sopName}</h2>
               <p className="text-gray-500 mt-1">{report.department}</p>
               <p className="text-xs text-gray-400 mt-1">Analyzed {new Date(report.analyzedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+              {resolveAnnexureStatus(report) === 'none' && (
+                <p className="text-xs text-slate-600 mt-2 max-w-xl">
+                  No annexure is connected to this SOP. Link Annexure forms/logs on the SOP, then re-run compliance.
+                </p>
+              )}
+              {resolveAnnexureStatus(report) === 'not-checked' && (
+                <p className="text-xs text-amber-700 mt-2 max-w-xl">
+                  Annexures are connected to this SOP, but this compliance run did not check them against guidelines.
+                  Use <span className="font-semibold">Regenerate with Annexures</span> to include them.
+                </p>
+              )}
+              {resolveAnnexureStatus(report) === 'linked-unread' && (
+                <p className="text-xs text-amber-700 mt-2 max-w-xl">
+                  Annexures are connected but could not be read for the guideline audit.
+                  Prefer DOCX/PDF, then use <span className="font-semibold">Regenerate with Annexures</span>.
+                </p>
+              )}
+              {resolveAnnexureStatus(report) === 'checked' && (
+                <p className="text-xs text-emerald-700 mt-2 max-w-xl">
+                  Annexures were connected and checked with the guidelines for this run
+                  {report.annexuresIncluded?.length
+                    ? `: ${report.annexuresIncluded.map((a) => a.label).join(', ')}`
+                    : '.'}
+                </p>
+              )}
             </div>
             <div className="text-center">
               <div className={`inline-flex flex-col items-center justify-center w-24 h-24 rounded-full border-4 ${
@@ -318,6 +444,7 @@ export default function ComplianceReportDetailPage() {
               <FindingCard
                 key={i}
                 finding={f}
+                traceabilityMatrix={report.traceabilityMatrix}
                 reportContext={{
                   sopIdentifier: report.sopIdentifier,
                   sopName: report.sopName,
@@ -326,7 +453,7 @@ export default function ComplianceReportDetailPage() {
                   complianceStatus: report.complianceStatus,
                 }}
                 index={i}
-                defaultExpanded={f.complianceLevel === 'partial' || f.complianceLevel === 'non-compliant'}
+                defaultExpanded={true}
                 showCheckbox={false}
               />
             ))}
@@ -338,6 +465,15 @@ export default function ComplianceReportDetailPage() {
           </div>
         </div>
       </div>
+
+      <RecheckSopModal
+        isOpen={recheckOpen}
+        onClose={() => setRecheckOpen(false)}
+        reportId={id}
+        sopIdentifier={report.sopIdentifier}
+        sopName={report.sopName}
+        onRechecked={() => loadReport(true)}
+      />
     </div>
   );
 }

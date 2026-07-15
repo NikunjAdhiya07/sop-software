@@ -24,6 +24,7 @@ import {
 import type { DashboardStats } from "@/lib/types";
 import { useDashboardStore } from "@/lib/store/dashboard-store";
 import { Btn } from "./ui";
+import { FilesFolderImportButton } from "./FilesFolderImportButton";
 
 interface DashboardToolbarProps {
   stats: DashboardStats | null;
@@ -33,6 +34,7 @@ interface DashboardToolbarProps {
   canMutate: boolean;
   isAdmin: boolean;
   onOpenGuidelinesWizard?: () => void;
+  onFilesImportComplete?: () => void;
 }
 
 export function DashboardToolbar({
@@ -42,6 +44,7 @@ export function DashboardToolbar({
   canMutate,
   isAdmin,
   onOpenGuidelinesWizard,
+  onFilesImportComplete,
 }: DashboardToolbarProps) {
   const router = useRouter();
   const {
@@ -103,6 +106,7 @@ export function DashboardToolbar({
 
         {canMutate && (
           <>
+            <FilesFolderImportButton onComplete={onFilesImportComplete} />
             <Btn size="sm" className="border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100" onClick={() => setFolderUploadOpen(true)}>
               <Upload className="h-3 w-3" /> Version Fetch Upload
             </Btn>

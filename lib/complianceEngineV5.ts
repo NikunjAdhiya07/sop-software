@@ -28,6 +28,7 @@ import {
   isComplianceRunStopRequested,
 } from "@/lib/compliance-run-control";
 import { isGeminiDailyQuotaError } from "@/lib/gemini-client";
+import { windowSopContentForAudit } from "@/lib/compliance-sop-content";
 import { getComplianceProvider, type LlmProvider } from "@/lib/llm";
 import {
   getScoreLabel,
@@ -162,6 +163,7 @@ CLASSIFY EACH CLAUSE (decide applicability FIRST, then compliance):
 
 DISCIPLINE (defensible findings only):
 - Search the ENTIRE indexed SOP before concluding. Cite the SOP line you relied on.
+- Linked ANNEXURES / forms / logs / templates in the indexed text ARE valid evidence for documentation, data tracking, record-keeping, and similar requirements — do NOT raise "data not tracked" / "no record form" gaps when an annexure provides that form or log.
 - A generic mention of "records / verify / ensure / as per procedure" is NOT evidence for a specific regulatory concept (ALCOA+, change control, risk assessment, data integrity, validation lifecycle). Treat such clauses as "partial" or "non-compliant".
 - No speculation ("may", "appears", "could", "seems"). Every gap must name the specific missing element in evidenceMissing.
 
@@ -193,22 +195,22 @@ APPLICABILITY (rule 2):
 
 NO-ASSUMPTION POLICY (rule 3) — FORBIDDEN:
 - Speculative findings ("may be inadequate", "appears incomplete", "could be weak", "possibly insufficient", "seems", "likely").
-- Every gap MUST cite a concrete Guideline Requirement + specific Missing SOP Evidence. If evidence exists ANYWHERE in the SOP, do NOT raise the finding.
+- Every gap MUST cite a concrete Guideline Requirement + specific Missing SOP Evidence. If evidence exists ANYWHERE in the SOP or its LINKED ANNEXURES (forms/logs/templates), do NOT raise the finding — annexures count as record-keeping evidence.
 
 SCOPE OWNERSHIP (rule 4):
 - Decide who owns the topic: "current-sop" | "referenced-sop" | "department-procedure" | "quality-system".
 - If the topic is governed by a dedicated referenced SOP (e.g. Change Control, Deviation, CAPA), do NOT penalise this SOP. Mark "compliant" (or "not-applicable") with scopeOwner "referenced-sop" and note that the reference must be verified — do NOT create a non-compliant gap against this SOP for it.
 
 NON-COMPLIANT CRITERIA (rule 5) — mark "non-compliant" ONLY when ALL are true:
-  (a) requirement is applicable, AND (b) requirement is genuinely missing, AND (c) NO supporting evidence exists anywhere in the SOP.
+  (a) requirement is applicable, AND (b) requirement is genuinely missing, AND (c) NO supporting evidence exists anywhere in the SOP or its linked annexures.
 Otherwise use "partial" (some evidence, gap remains) or "not-applicable". Do NOT mark non-compliant merely because wording is not explicit.
 
 EVIDENCE FIELDS:
-- "evidenceFound": what the SOP DOES provide (verbatim/paraphrase) or "None".
+- "evidenceFound": what the SOP or annexure DOES provide (verbatim/paraphrase) or "None".
 - "evidenceMissing": the specific element still required, or "None" when compliant.
-- "sopTextSnippet": 1-2 verbatim SOP lines, or "Not Found".
+- "sopTextSnippet": 1-2 verbatim SOP/annexure lines, or "Not Found".
 - "sopSectionAffected": "L042 [§4.2 Title]"; "pageNumber"/"paragraphNumber" only if inferable, else "".
-- Do NOT credit generic mentions of "records/verify/ensure" as evidence for a specific regulatory concept.
+- Do NOT credit generic mentions of "records/verify/ensure" as evidence for a specific regulatory concept — but DO credit concrete annexure forms, log templates, and tracked fields.
 
 REQUIREMENT IMPORTANCE & REASONING (for weighted scoring + auditor panel):
 - "requirementCriticality": inherent importance of the requirement independent of compliance — "critical" | "major" | "minor".
@@ -368,6 +370,7 @@ function finalizeFinding(raw: RawFinding | undefined, clause: GuidelineClauseInp
   return {
     clauseNumber: raw?.clauseNumber ?? clause.clauseNumber,
     clauseTitle: raw?.clauseTitle ?? clause.clauseTitle,
+    clauseText: (clause.clauseText ?? "").trim(),
     complianceLevel: level,
     matchConfidence: formatConfidence(raw?.matchConfidence ?? 0),
     issueSeverity: raw?.issueSeverity ?? (level === "non-compliant" ? "major" : "informational"),
@@ -422,7 +425,10 @@ async function analyzeBatch(
     )
     .join("\n\n");
 
-  const sopBlock = indexedSopContent.slice(0, options?.deep ? cfg.maxSopCharsPerBatch : cfg.maxSopCharsScreen);
+  const sopBlock = windowSopContentForAudit(
+    indexedSopContent,
+    options?.deep ? cfg.maxSopCharsPerBatch : cfg.maxSopCharsScreen,
+  );
   const summaryBlock =
     sectionSummary.length > cfg.maxSectionSummaryChars
       ? `${sectionSummary.slice(0, cfg.maxSectionSummaryChars)}…`

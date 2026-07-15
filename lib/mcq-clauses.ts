@@ -9,6 +9,14 @@ export interface SopClause {
 const CLAUSE_HEADING =
   /^(\d+(?:\.\d+){0,5})(?:\s+|[.)]\s*)(.+)$/;
 
+// Matches the "--- Annexure-I ---" block markers buildAnnexureSupplement()
+// (lib/compliance-sop-content.ts) inserts when annexure file text is folded
+// into the generation source. Each marker starts its own addressable clause
+// keyed by the annexure label, so clause-wise generation can target annexure
+// content directly instead of it being silently absorbed into whichever
+// numbered clause happened to precede it.
+const ANNEXURE_BLOCK_MARKER = /^-{2,}\s*(.+?)\s*-{2,}$/;
+
 const MAX_CLAUSE_TEXT = 900;
 const MAX_CLAUSES = 120;
 
@@ -24,8 +32,16 @@ export function parseClausesFromText(raw: string): SopClause[] {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    const annexureMarker = trimmed.match(ANNEXURE_BLOCK_MARKER);
     const m = trimmed.match(CLAUSE_HEADING);
-    if (m && m[1].length <= 12) {
+    if (annexureMarker) {
+      if (current) clauses.push(trimClause(current));
+      current = {
+        id: annexureMarker[1].slice(0, 40),
+        summary: annexureMarker[1].slice(0, 100),
+        text: "",
+      };
+    } else if (m && m[1].length <= 12) {
       if (current) clauses.push(trimClause(current));
       current = {
         id: m[1],
@@ -33,7 +49,7 @@ export function parseClausesFromText(raw: string): SopClause[] {
         text: trimmed,
       };
     } else if (current) {
-      const next = `${current.text}\n${trimmed}`;
+      const next = current.text ? `${current.text}\n${trimmed}` : trimmed;
       current.text = next.length > MAX_CLAUSE_TEXT ? next.slice(0, MAX_CLAUSE_TEXT) : next;
     }
   }

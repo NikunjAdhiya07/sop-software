@@ -28,6 +28,7 @@ import {
   isComplianceRunActiveInProcess,
   assertComplianceRunActive,
 } from '@/lib/compliance-run-control';
+import { resolveComplianceSopContent } from '@/lib/compliance-sop-content';
 
 /**
  * ═══════════════════════════════════════════════════════════════════════
@@ -100,7 +101,19 @@ export async function POST(request: NextRequest) {
     await connectDB();
     
     const body = await request.json();
-    const { sopId, guidelineFilters, guidelineIds, config, provider: bodyProvider, model: bodyModel } = body;
+    const {
+      sopId,
+      guidelineFilters,
+      guidelineIds,
+      config,
+      provider: bodyProvider,
+      model: bodyModel,
+      includeAnnexures,
+      requireAnnexures,
+    } = body;
+    // Default ON — linked annexures carry forms/logs that close "data not tracked" gaps.
+    const withAnnexures = includeAnnexures !== false;
+    const mustHaveAnnexures = requireAnnexures === true;
     const userId = auth.session.user.id;
 
     const provider: LlmProvider | undefined =
@@ -182,7 +195,10 @@ export async function POST(request: NextRequest) {
     
     await job.save();
     
-    const sop = await SOP.findById(sopId);
+    const resolvedSop = await resolveComplianceSopContent(sopId, {
+      includeAnnexures: withAnnexures,
+    });
+    const sop = resolvedSop?.record;
     
     if (!sop) {
       await logJobError(jobId, 'sop-not-found', 
@@ -201,6 +217,18 @@ export async function POST(request: NextRequest) {
     console.log(`✅ SOP: ${sop.name} (${sop.identifier})`);
     console.log(`   Department: ${sop.department}`);
     console.log(`   Content: ${sop.content?.length || 0} characters`);
+    if (withAnnexures) {
+      const annexChars = resolvedSop?.annexureSupplementChars ?? 0;
+      console.log(`   Annexures: ${annexChars} characters`);
+      if (mustHaveAnnexures && !annexChars) {
+        const message = 'No readable linked annexures were found for this SOP.';
+        await logJobError(jobId, 'annexures-not-found', message, 'sop-fetch');
+        return NextResponse.json(
+          { success: false, error: message, userMessage: message },
+          { status: 422 },
+        );
+      }
+    }
 
     if (isComplianceRunActiveInProcess(sopId)) {
       await ComplianceAnalysisJob.findOneAndUpdate(
@@ -609,7 +637,13 @@ export async function POST(request: NextRequest) {
       console.log('   ✅ Data synchronization validated');
     }
     
-    const mappedFindings = reportFindings.map((f) => ({
+    const clauseByKey = new Map(
+      clausesToAnalyze.map((c) => [`${c.guidelineId}:${c.clauseNumber}`, c]),
+    );
+
+    const mappedFindings = reportFindings.map((f) => {
+      const clause = clauseByKey.get(`${f.guidelineId}:${f.clauseNumber}`);
+      return {
       clauseNumber: f.clauseNumber || "N/A",
       clauseTitle: f.clauseTitle || "Unknown Clause",
       complianceLevel: (f.complianceLevel === "unable-to-determine"
@@ -620,7 +654,11 @@ export async function POST(request: NextRequest) {
       sopSectionAffected: `${f.sopSectionNumber || "N/A"} - ${f.sopSectionTitle || "Unknown"}`,
       mismatchExplanation: (f.specificGap || "No explanation available").slice(0, 2000),
       sopTextSnippet: (f.sopTextSnippet || f.sopCurrentState || "No SOP text available.").slice(0, 2000),
-      guidelineRequirement: (f.guidelineRequirement || "See guideline clause text").slice(0, 2000),
+      guidelineRequirement: (f.guidelineRequirement || clause?.clauseText?.slice(0, 600) || "See guideline clause text").slice(0, 2000),
+      clauseText: (clause?.clauseText || f.clauseText || "").slice(0, 6000),
+      evidenceFound: (f.sopTextSnippet || f.sopCurrentState || "").slice(0, 2000),
+      guidelineSourceLine: f.guidelineSourceLine,
+      guidelineLineNumber: f.guidelineLineNumber,
       suggestedAction: (f.suggestedAction || "Manual review required").slice(0, 2000),
       suggestedText: (f.suggestedText || "Manual review required.").slice(0, 2000),
       estimatedEffort: f.estimatedEffort,
@@ -628,7 +666,8 @@ export async function POST(request: NextRequest) {
       guidelineName: f.guidelineName,
       folderName: f.folderName,
       guidelineId: f.guidelineId,
-    }));
+    };
+    });
 
     const reportStatus = ["Fully Compliant", "Partially Compliant", "Non-Compliant", "Analysis Pending", "Analysis Failed"].includes(scoreResult.complianceStatus)
       ? scoreResult.complianceStatus
@@ -646,6 +685,12 @@ export async function POST(request: NextRequest) {
       scoreBreakdown: v3ScoreToBreakdown(scoreResult),
       analysisEngineVersion: "v3",
       processingTimeMs: Date.now() - startTime,
+      annexuresChecked: resolvedSop?.annexureStatus === "checked",
+      annexureStatus: resolvedSop?.annexureStatus ?? "none",
+      linkedAnnexureCount: resolvedSop?.linkedAnnexureCount ?? 0,
+      annexureChars: resolvedSop?.annexureSupplementChars ?? 0,
+      annexuresIncluded: resolvedSop?.annexuresIncluded ?? [],
+      annexuresSkipped: resolvedSop?.annexuresSkipped ?? [],
     });
     console.log(`✅ Report saved: ${report._id}`);
 
@@ -728,6 +773,7 @@ export async function POST(request: NextRequest) {
       
       // Processing info
       processingTimeMs: totalTime,
+      annexureSupplementChars: resolvedSop?.annexureSupplementChars ?? 0,
       message: 'Analysis completed with V3 precision engine',
       reportUrl: `/compliance/report/${report._id}`,
     });

@@ -39,6 +39,12 @@ export type RunComplianceReviewInput = {
   runEpoch?: number;
   /** When set, only these guidelines are re-analyzed; other findings are kept from the last report. */
   scopedGuidelineIds?: string[];
+  annexuresChecked?: boolean;
+  annexureStatus?: "none" | "checked" | "not-checked" | "linked-unread";
+  linkedAnnexureCount?: number;
+  annexureChars?: number;
+  annexuresIncluded?: { label: string; fileName: string; chars: number }[];
+  annexuresSkipped?: { label: string; fileName: string; reason: string }[];
 };
 
 export type ComplianceReviewOutput = {
@@ -236,7 +242,22 @@ export async function runComplianceReview(
 
   const hasStalework = staleClauses.length > 0;
   if (!hasStalework && cachedFindings.length > 0) {
-    // All guidelines are fresh — return cached report directly.
+    // All guidelines are fresh — keep attestation up to date, return cached findings.
+    await ComplianceReport.updateOne(
+      { _id: existingReport!._id },
+      {
+        $set: {
+          annexuresChecked: input.annexureStatus === "checked" || input.annexuresChecked === true,
+          annexureStatus:
+            input.annexureStatus ??
+            (input.annexuresChecked === true ? "checked" : "none"),
+          linkedAnnexureCount: input.linkedAnnexureCount ?? 0,
+          annexureChars: input.annexureChars ?? 0,
+          annexuresIncluded: input.annexuresIncluded ?? [],
+          annexuresSkipped: input.annexuresSkipped ?? [],
+        },
+      },
+    );
     return {
       mode: "cached",
       overallScore: existingReport!.overallScore,
@@ -313,6 +334,14 @@ export async function runComplianceReview(
     clauseCoveragePct: result.clauseCoveragePct,
     auditCompleteness: result.auditCompleteness,
     analysisEngineVersion: result.analysisEngineVersion,
+    annexuresChecked: input.annexureStatus === "checked" || input.annexuresChecked === true,
+    annexureStatus:
+      input.annexureStatus ??
+      (input.annexuresChecked === true ? "checked" : "none"),
+    linkedAnnexureCount: input.linkedAnnexureCount ?? 0,
+    annexureChars: input.annexureChars ?? 0,
+    annexuresIncluded: input.annexuresIncluded ?? [],
+    annexuresSkipped: input.annexuresSkipped ?? [],
   });
 
   const mergedGuidelineHashes =

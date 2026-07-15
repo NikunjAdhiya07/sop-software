@@ -36,6 +36,9 @@ export interface RegistrySOP {
     pdf: FileLinks;
     docxDateError?: FileLinks;
   };
+  annexures: { label: string; filePath: string; fileName?: string }[];
+  /** Roman annexure labels required in the SOP ANNEXURES section (e.g. I, II, III). */
+  requiredAnnexures?: string[];
   /** Which docx/pdf record slots exist on the current version (not whether fileUrl is set). */
   fileSlots: {
     docx: { en: boolean; gu: boolean };
@@ -147,6 +150,7 @@ export interface DepartmentCapsule {
     en: { found: number; missing: number };
     gu: { found: number; missing: number };
   };
+  annexures: { found: number; missing: number };
   videos: {
     available: number;
     required: number;
@@ -193,6 +197,7 @@ export interface SOPFilters {
   expiry?: string;
   versionStatus?: string;
   versionDate?: string;
+  annexureStatus?: string;
   dualLanguage?: boolean;
   absoluteSop?: boolean;
   obsoleteOnly?: boolean;
