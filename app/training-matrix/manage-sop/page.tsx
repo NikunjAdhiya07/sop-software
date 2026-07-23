@@ -12,12 +12,13 @@ import React, {
   createContext,
   memo,
 } from 'react';
-import { Search, Download, ArrowLeft, Filter, ScrollText, Users, Tag, Wand2 } from 'lucide-react';
+import { Search, Download, ArrowLeft, Filter, ScrollText, Users, Tag, Wand2, Calendar, ChevronDown, ChevronUp } from 'lucide-react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { useAuthGuard } from '@/hooks/useAuthGuard';
 import { sopCodeMatchesSearch } from '@/lib/sopIdentifierNormalize';
+import TrainingCalendar from '@/components/training-matrix/TrainingCalendar';
 
 const MONTH_SHORT = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const MONTH_FULL = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
@@ -52,6 +53,30 @@ const DEPT_COLORS: Record<string, string> = {
   Engineering: '#64748b',
   Personnel: '#ec4899',
 };
+
+function deptAbbrLabel(dept: string): string {
+  if (DEPT_ABBR[dept]) return DEPT_ABBR[dept];
+  const letters = dept.replace(/[^a-zA-Z]/g, '');
+  if (letters.length >= 4) return letters.slice(0, 4).toUpperCase();
+  if (letters.length >= 2) return letters.toUpperCase();
+  return (dept.slice(0, 4) || dept).toUpperCase();
+}
+
+function deptShortLabel(dept: string): string {
+  if (DEPT_SHORT[dept]) return DEPT_SHORT[dept];
+  if (/engineer/i.test(dept)) return 'EN';
+  if (/micro/i.test(dept)) return 'MI';
+  if (/person|hr/i.test(dept)) return 'PE';
+  if (/prod/i.test(dept)) return 'PR';
+  if (/store/i.test(dept)) return 'ST';
+  const letters = dept.replace(/[^a-zA-Z]/g, '');
+  if (letters.length >= 2) return letters.slice(0, 2).toUpperCase();
+  return (dept.slice(0, 2) || '??').toUpperCase();
+}
+
+function deptColor(dept: string): string {
+  return DEPT_COLORS[dept] || '#7c3aed';
+}
 
 // 2-letter abbreviation for designation (Sr Executive -> SE, Officer -> OF, Chemist -> CH)
 function desigAbbr(designation: string): string {
@@ -282,7 +307,9 @@ export default function ManageSOPDashboard() {
   // 'employee' replaces the inner column with the resolved employee roster per dept.
   // Checkboxes still operate on the underlying designation overrides, so toggling
   // an employee toggles their designation (and every other employee of that designation).
-  const [viewMode, setViewMode] = useState<'designation' | 'employee'>('designation');
+  const [viewMode, setViewMode] = useState<'designation' | 'employee' | 'calendar'>('designation');
+  // Collapse KPI + search/actions so Calendar fits on one screen.
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
   // Editing state — per-SOP slices so React.memo on rows works.
   //   overrides[sopCode]["dept|abbr"]            -> training-check checkbox
   //   inductionOverrides[sopCode]["dept|abbr"]   -> induction checkbox
@@ -1530,7 +1557,7 @@ export default function ManageSOPDashboard() {
   const popupHeader = (scope: CountScope): { title: string; subtitle: string; dept: string } => {
     if (scope.kind === 'dept-month')
       return {
-        title: `${DEPT_ABBR[scope.dept] || scope.dept} · ${scope.monthName}`,
+        title: `${deptAbbrLabel(scope.dept)} · ${scope.monthName}`,
         subtitle: `SOPs scheduled in ${scope.monthName} for ${scope.dept}`,
         dept: scope.dept,
       };
@@ -1542,7 +1569,7 @@ export default function ManageSOPDashboard() {
       };
     if (scope.kind === 'dept-total')
       return {
-        title: `${DEPT_ABBR[scope.dept] || scope.dept} — Total`,
+        title: `${deptAbbrLabel(scope.dept)} — Total`,
         subtitle: `All SOPs scheduled for ${scope.dept}`,
         dept: scope.dept,
       };
@@ -1783,151 +1810,181 @@ export default function ManageSOPDashboard() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-50 overflow-hidden">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-full mx-auto px-6 py-4">
-          {/* Title and Back Button */}
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-4">
-              <Link href={backHref} className="text-blue-600 hover:text-blue-700">
-                <ArrowLeft size={20} />
+      {/* Header — title + view tabs always visible; KPI/search collapse for calendar space */}
+      <div className="bg-white border-b border-gray-200 shrink-0 z-50 shadow-sm">
+        <div className={`max-w-full mx-auto px-6 ${headerCollapsed ? 'py-2' : 'py-4'}`}>
+          {/* Title row + collapse toggle */}
+          <div className={`flex items-center justify-between gap-3 ${headerCollapsed ? 'mb-2' : 'mb-4'}`}>
+            <div className="flex items-center gap-3 min-w-0">
+              <Link href={backHref} className="text-blue-600 hover:text-blue-700 shrink-0">
+                <ArrowLeft size={headerCollapsed ? 18 : 20} />
               </Link>
-              <h1 className="text-2xl font-bold text-gray-900">Manage SOP Training Data</h1>
+              <h1 className={`font-bold text-gray-900 truncate ${headerCollapsed ? 'text-lg' : 'text-2xl'}`}>
+                Manage SOP Training Data
+              </h1>
               {refreshing && (
-                <span className="text-xs font-medium text-blue-600 animate-pulse">Updating…</span>
+                <span className="text-xs font-medium text-blue-600 animate-pulse shrink-0">Updating…</span>
               )}
             </div>
-          </div>
-
-          {/* Stats Cards — clicking filters the SOP table to that bucket. */}
-          <div className="grid grid-cols-3 gap-3 mb-4">
             <button
               type="button"
-              onClick={() => setCardFilter('all')}
-              className={`text-left bg-purple-50 border rounded-lg p-3 transition hover:bg-purple-100 ${
-                cardFilter === 'all' ? 'border-purple-500 ring-2 ring-purple-300' : 'border-purple-200'
-              }`}
+              onClick={() => setHeaderCollapsed((c) => !c)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50 shrink-0"
+              title={headerCollapsed ? 'Expand header' : 'Collapse header for more calendar space'}
+              aria-expanded={!headerCollapsed}
             >
-              <div className="text-sm text-purple-600 font-medium">Total SOPs</div>
-              <div className="text-2xl font-bold text-purple-900">{countsAPI.total()}</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => setCardFilter('assigned')}
-              className={`text-left bg-blue-50 border rounded-lg p-3 transition hover:bg-blue-100 ${
-                cardFilter === 'assigned' ? 'border-blue-500 ring-2 ring-blue-300' : 'border-blue-200'
-              }`}
-            >
-              <div className="text-sm text-blue-600 font-medium">Assigned SOPs</div>
-              <div className="text-2xl font-bold text-blue-900">{countsAPI.assigned()}</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => setCardFilter('unassigned')}
-              className={`text-left bg-red-50 border rounded-lg p-3 transition hover:bg-red-100 ${
-                cardFilter === 'unassigned' ? 'border-red-500 ring-2 ring-red-300' : 'border-red-200'
-              }`}
-            >
-              <div className="text-sm text-red-600 font-medium">Unassigned SOPs</div>
-              <div className="text-2xl font-bold text-red-900">{countsAPI.unassigned()}</div>
+              {headerCollapsed ? (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                  Expand
+                </>
+              ) : (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" />
+                  Collapse
+                </>
+              )}
             </button>
           </div>
 
-          {/* Search */}
-          <div className="flex gap-3 items-center">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-2.5 text-gray-400 w-5 h-5" />
-              <input
-                type="text"
-                placeholder="Search SOP No or Name..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <button className="p-2 border border-gray-300 rounded hover:bg-gray-50 text-gray-600">
-              <Filter className="w-4 h-4" />
-            </button>
-            <button
-              onClick={autoAssign}
-              disabled={autoAssigning || applying}
-              className="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
-              title="Automatically schedule every unassigned SOP across the year, balanced per month and grouped by department"
-            >
-              <Wand2 className="w-4 h-4" />
-              {autoAssigning ? 'Assigning…' : 'Auto-Assign'}
-            </button>
-            <button
-              onClick={() => applyChanges()}
-              disabled={applying || autoAssigning}
-              className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
-              title="Persist checked designation × month selections into the training matrix"
-            >
-              {applying ? 'Saving…' : 'Update'}
-            </button>
-            {applyMsg && (
-              <span
-                className={`text-[11px] font-medium ${applyMsg.kind === 'ok' ? 'text-green-700' : 'text-red-600'}`}
-                role="status"
-              >
-                {applyMsg.text}
-              </span>
-            )}
-            <button
-              onClick={openLogs}
-              className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-800 flex items-center gap-2 text-sm font-medium"
-              title="View audit log of allocations made via this page"
-            >
-              <ScrollText className="w-4 h-4" />
-              Logs
-            </button>
-            <div className="relative" ref={exportMenuRef}>
-              <button
-                onClick={() => setExportMenuOpen(o => !o)}
-                className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
-                title="Export the assigned SOPs as a training matrix (same format as the reference Excel files)"
-              >
-                <Download className="w-4 h-4" />
-                Export to Excel
-              </button>
-              {exportMenuOpen && (
-                <div className="absolute right-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-[60] py-1 max-h-96 overflow-auto">
-                  <button
-                    onClick={() => handleExport('all')}
-                    className="w-full text-left px-3 py-2 text-sm font-medium text-gray-900 hover:bg-gray-100"
-                  >
-                    All Departments (one sheet each)
-                  </button>
-                  <div className="my-1 border-t border-gray-100" />
-                  <div className="px-3 py-1 text-[11px] uppercase tracking-wide text-gray-400">
-                    Department-wise
+          {!headerCollapsed && (
+            <>
+              {/* Stats Cards — clicking filters the SOP table to that bucket. */}
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <button
+                  type="button"
+                  onClick={() => setCardFilter('all')}
+                  className={`text-left bg-purple-50 border rounded-lg p-3 transition hover:bg-purple-100 ${
+                    cardFilter === 'all' ? 'border-purple-500 ring-2 ring-purple-300' : 'border-purple-200'
+                  }`}
+                >
+                  <div className="text-sm text-purple-600 font-medium">Total SOPs</div>
+                  <div className="text-2xl font-bold text-purple-900">{countsAPI.total()}</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCardFilter('assigned')}
+                  className={`text-left bg-blue-50 border rounded-lg p-3 transition hover:bg-blue-100 ${
+                    cardFilter === 'assigned' ? 'border-blue-500 ring-2 ring-blue-300' : 'border-blue-200'
+                  }`}
+                >
+                  <div className="text-sm text-blue-600 font-medium">Assigned SOPs</div>
+                  <div className="text-2xl font-bold text-blue-900">{countsAPI.assigned()}</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCardFilter('unassigned')}
+                  className={`text-left bg-red-50 border rounded-lg p-3 transition hover:bg-red-100 ${
+                    cardFilter === 'unassigned' ? 'border-red-500 ring-2 ring-red-300' : 'border-red-200'
+                  }`}
+                >
+                  <div className="text-sm text-red-600 font-medium">Unassigned SOPs</div>
+                  <div className="text-2xl font-bold text-red-900">{countsAPI.unassigned()}</div>
+                </button>
+              </div>
+
+              {/* Search + matrix actions (hidden on calendar — calendar has its own tools) */}
+              {viewMode !== 'calendar' && (
+                <div className="flex gap-3 items-center mb-3">
+                  <div className="flex-1 relative">
+                    <Search className="absolute left-3 top-2.5 text-gray-400 w-5 h-5" />
+                    <input
+                      type="text"
+                      placeholder="Search SOP No or Name..."
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
                   </div>
-                  {departments.map(dept => (
-                    <button
-                      key={dept}
-                      onClick={() => handleExport(dept)}
-                      className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                  <button className="p-2 border border-gray-300 rounded hover:bg-gray-50 text-gray-600">
+                    <Filter className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={autoAssign}
+                    disabled={autoAssigning || applying}
+                    className="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
+                    title="Automatically schedule every unassigned SOP across the year, balanced per month and grouped by department"
+                  >
+                    <Wand2 className="w-4 h-4" />
+                    {autoAssigning ? 'Assigning…' : 'Auto-Assign'}
+                  </button>
+                  <button
+                    onClick={() => applyChanges()}
+                    disabled={applying || autoAssigning}
+                    className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
+                    title="Persist checked designation × month selections into the training matrix"
+                  >
+                    {applying ? 'Saving…' : 'Update'}
+                  </button>
+                  {applyMsg && (
+                    <span
+                      className={`text-[11px] font-medium ${applyMsg.kind === 'ok' ? 'text-green-700' : 'text-red-600'}`}
+                      role="status"
                     >
-                      <span
-                        className="inline-block w-2 h-2 rounded-full"
-                        style={{ background: DEPT_COLORS[dept] || '#9ca3af' }}
-                      />
-                      {dept}
+                      {applyMsg.text}
+                    </span>
+                  )}
+                  <button
+                    onClick={openLogs}
+                    className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-800 flex items-center gap-2 text-sm font-medium"
+                    title="View audit log of allocations made via this page"
+                  >
+                    <ScrollText className="w-4 h-4" />
+                    Logs
+                  </button>
+                  <div className="relative" ref={exportMenuRef}>
+                    <button
+                      onClick={() => setExportMenuOpen(o => !o)}
+                      className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
+                      title="Export the assigned SOPs as a training matrix (same format as the reference Excel files)"
+                    >
+                      <Download className="w-4 h-4" />
+                      Export to Excel
                     </button>
-                  ))}
+                    {exportMenuOpen && (
+                      <div className="absolute right-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-[60] py-1 max-h-96 overflow-auto">
+                        <button
+                          onClick={() => handleExport('all')}
+                          className="w-full text-left px-3 py-2 text-sm font-medium text-gray-900 hover:bg-gray-100"
+                        >
+                          All Departments (one sheet each)
+                        </button>
+                        <div className="my-1 border-t border-gray-100" />
+                        <div className="px-3 py-1 text-[11px] uppercase tracking-wide text-gray-400">
+                          Department-wise
+                        </div>
+                        {departments.map(dept => (
+                          <button
+                            key={dept}
+                            onClick={() => handleExport(dept)}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                          >
+                            <span
+                              className="inline-block w-2 h-2 rounded-full"
+                              style={{ background: deptColor(dept) }}
+                            />
+                            {dept}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    {filteredSops.length} SOPs
+                  </div>
                 </div>
               )}
-            </div>
-            <div className="text-sm text-gray-600">
-              {filteredSops.length} SOPs
-            </div>
-          </div>
+            </>
+          )}
 
-          {/* View toggle — switches the inner column between Designations and Employees */}
-          <div className="mt-3 inline-flex rounded-md border border-gray-300 overflow-hidden text-sm">
+          {/* View toggle — Designations / Employees / Calendar */}
+          <div className="inline-flex rounded-md border border-gray-300 overflow-hidden text-sm">
             <button
               type="button"
-              onClick={() => setViewMode('designation')}
+              onClick={() => {
+                setViewMode('designation');
+                setHeaderCollapsed(false);
+              }}
               className={`px-3 py-1.5 inline-flex items-center gap-1.5 transition ${
                 viewMode === 'designation'
                   ? 'bg-blue-600 text-white'
@@ -1940,7 +1997,10 @@ export default function ManageSOPDashboard() {
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('employee')}
+              onClick={() => {
+                setViewMode('employee');
+                setHeaderCollapsed(false);
+              }}
               className={`px-3 py-1.5 inline-flex items-center gap-1.5 border-l border-gray-300 transition ${
                 viewMode === 'employee'
                   ? 'bg-blue-600 text-white'
@@ -1951,10 +2011,32 @@ export default function ManageSOPDashboard() {
               <Users className="w-3.5 h-3.5" />
               Employees
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('calendar');
+                setHeaderCollapsed(true);
+              }}
+              className={`px-3 py-1.5 inline-flex items-center gap-1.5 border-l border-gray-300 transition ${
+                viewMode === 'calendar'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-700 hover:bg-gray-50'
+              }`}
+              title="Assign exam dates on a calendar"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              Calendar
+            </button>
           </div>
         </div>
       </div>
 
+      {viewMode === 'calendar' ? (
+        <div className="flex-1 overflow-hidden min-h-0 flex flex-col">
+          <TrainingCalendar />
+        </div>
+      ) : (
+      <>
       {/* Table Container — reserve space at the bottom so the fixed scrollbar +
           footer don't overlap the last rows of the table. */}
       <div
@@ -2037,6 +2119,8 @@ export default function ManageSOPDashboard() {
           Showing all {filteredSops.length} SOPs
         </div>
       </div>
+      </>
+      )}
 
       {/* Employee SOP detail modal — opened by clicking an employee name in Employees view */}
       {empModal && empModalDerived && (
@@ -2052,12 +2136,12 @@ export default function ManageSOPDashboard() {
             {/* Header */}
             <div
               className="flex items-start justify-between px-5 py-3 border-b border-gray-200 rounded-t-lg"
-              style={{ backgroundColor: `${DEPT_COLORS[empModal.dept] || '#6366f1'}12` }}
+              style={{ backgroundColor: `${deptColor(empModal.dept)}12` }}
             >
               <div className="min-w-0">
                 <div className="text-base font-bold text-gray-900 truncate">{empModal.name}</div>
                 <div className="text-xs text-gray-600 truncate">
-                  {DEPT_ABBR[empModal.dept] || empModal.dept}
+                  {deptAbbrLabel(empModal.dept)}
                   {empModal.designation ? ` · ${empModal.designation}` : ''}
                 </div>
               </div>
@@ -2253,7 +2337,7 @@ export default function ManageSOPDashboard() {
               <div className="min-w-0">
                 <div className="text-base font-bold text-gray-900">Add Employee Allocation</div>
                 <div className="text-xs text-gray-600">
-                  {addEmpModal.sopCode} · {DEPT_ABBR[addEmpModal.dept] || addEmpModal.dept}
+                  {addEmpModal.sopCode} · {deptAbbrLabel(addEmpModal.dept)}
                 </div>
               </div>
               <button
@@ -2403,9 +2487,9 @@ export default function ManageSOPDashboard() {
                           <td className="px-3 py-2">
                             <span
                               className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                              style={{ color: '#fff', backgroundColor: DEPT_COLORS[l.department] || '#6b7280' }}
+                              style={{ color: '#fff', backgroundColor: deptColor(l.department) }}
                             >
-                              {DEPT_ABBR[l.department] || l.department}
+                              {deptAbbrLabel(l.department)}
                             </span>
                           </td>
                           <td className="px-3 py-2 text-gray-700 whitespace-nowrap">
@@ -2471,15 +2555,15 @@ export default function ManageSOPDashboard() {
             {/* Header */}
             <div
               className="flex items-start justify-between px-5 py-3 border-b border-gray-200 rounded-t-lg"
-              style={{ backgroundColor: `${DEPT_COLORS[popup.dept] || '#6366f1'}12` }}
+              style={{ backgroundColor: `${deptColor(popup.dept)}12` }}
             >
               <div className="flex items-center gap-3 min-w-0">
                 {popup.dept && (
                   <span
                     className="text-xs font-bold px-2.5 py-1 rounded shrink-0"
-                    style={{ color: '#fff', backgroundColor: DEPT_COLORS[popup.dept] || '#6366f1' }}
+                    style={{ color: '#fff', backgroundColor: deptColor(popup.dept) }}
                   >
-                    {DEPT_ABBR[popup.dept] || popup.dept}
+                    {deptAbbrLabel(popup.dept)}
                   </span>
                 )}
                 <div className="min-w-0">
@@ -2827,10 +2911,10 @@ const SopRow = memo(function SopRow({
         {primaryDept ? (
           <span
             className="inline-block text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap"
-            style={{ color: '#fff', backgroundColor: DEPT_COLORS[primaryDept] }}
+            style={{ color: '#fff', backgroundColor: deptColor(primaryDept) }}
             title={primaryDept}
           >
-            {DEPT_ABBR[primaryDept] || primaryDept}
+            {deptAbbrLabel(primaryDept)}
           </span>
         ) : (
           <span className="text-xs text-gray-400">—</span>
@@ -2875,7 +2959,7 @@ const SopRow = memo(function SopRow({
             return (
               <div key={`dwd-${sop.sopCode}-${dept}`} className={`flex flex-row gap-3 leading-tight ${viewMode === 'employee' ? 'items-start' : 'items-center'}`}>
                 <div className="inline-flex items-center gap-1 w-16 shrink-0">
-                  <label className="inline-flex items-center cursor-pointer" title={`Toggle all TRAINING designations under ${DEPT_ABBR[dept]}`}>
+                  <label className="inline-flex items-center cursor-pointer" title={`Toggle all TRAINING designations under ${deptAbbrLabel(dept)}`}>
                     <TriStateCheckbox
                       checked={allTrainChecked}
                       indeterminate={someTrainChecked}
@@ -2883,10 +2967,10 @@ const SopRow = memo(function SopRow({
                       className="w-3 h-3"
                     />
                   </label>
-                  <span className="text-xs font-bold" style={{ color: DEPT_COLORS[dept] }}>
-                    {DEPT_SHORT[dept] || DEPT_ABBR[dept]}
+                  <span className="text-xs font-bold" style={{ color: deptColor(dept) }}>
+                    {deptShortLabel(dept)}
                   </span>
-                  <label className="inline-flex items-center cursor-pointer" title={`Toggle all INDUCTION designations under ${DEPT_ABBR[dept]}`}>
+                  <label className="inline-flex items-center cursor-pointer" title={`Toggle all INDUCTION designations under ${deptAbbrLabel(dept)}`}>
                     <TriStateCheckbox
                       checked={allIndChecked}
                       indeterminate={someIndChecked}
@@ -2919,8 +3003,8 @@ const SopRow = memo(function SopRow({
                           className={`text-[11px] font-semibold ${!isNative && !trainingChecked && !inductionChecked ? 'italic opacity-60' : ''}`}
                           style={{
                             color: (trainingChecked || inductionChecked)
-                              ? DEPT_COLORS[dept]
-                              : (isNative ? DEPT_COLORS[dept] : '#6b7280'),
+                              ? deptColor(dept)
+                              : (isNative ? deptColor(dept) : '#6b7280'),
                           }}
                         >
                           {abbr}
@@ -3035,7 +3119,7 @@ const SopRow = memo(function SopRow({
                           onOpenAddEmployee(sop.sopCode, sop.sopName || sop.sopCode, dept);
                         }}
                         className="inline-flex items-center rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-100"
-                        title={`Add employees for ${DEPT_ABBR[dept]} to ${sop.sopCode}`}
+                        title={`Add employees for ${deptAbbrLabel(dept)} to ${sop.sopCode}`}
                       >
                         + Add Employee
                       </button>
@@ -3090,8 +3174,8 @@ const SopRow = memo(function SopRow({
                   if (e.selected) {
                     stateClasses = 'cursor-pointer';
                     stateStyle = {
-                      backgroundColor: `${DEPT_COLORS[e.dept]}33`,
-                      boxShadow: `inset 0 0 0 1.5px ${DEPT_COLORS[e.dept]}`,
+                      backgroundColor: `${deptColor(e.dept)}33`,
+                      boxShadow: `inset 0 0 0 1.5px ${deptColor(e.dept)}`,
                     };
                   } else if (e.active) {
                     stateClasses = 'cursor-pointer';
@@ -3101,7 +3185,7 @@ const SopRow = memo(function SopRow({
                       key={`mo-${sop.sopCode}-${month}-${e.dept}`}
                       className={`${baseClasses} ${stateClasses} ${!e.active && !e.selected ? 'opacity-90' : ''}`}
                       style={stateStyle}
-                      title={e.active ? `Toggle ${DEPT_ABBR[e.dept]} training in ${month}` : `Check a designation under ${DEPT_ABBR[e.dept]} first`}
+                      title={e.active ? `Toggle ${deptAbbrLabel(e.dept)} training in ${month}` : `Check a designation under ${deptAbbrLabel(e.dept)} first`}
                     >
                       <input
                         type="checkbox"
@@ -3115,8 +3199,8 @@ const SopRow = memo(function SopRow({
                           overall designation state — otherwise an SOP assigned to QA in
                           Jan/Feb would still paint QA in purple under Mar–Dec, which
                           looks like every month is allocated. Gray = not selected. */}
-                      <span className="font-semibold" style={{ color: e.selected ? DEPT_COLORS[e.dept] : '#9ca3af' }}>
-                        {DEPT_SHORT[e.dept] || DEPT_ABBR[e.dept]}
+                      <span className="font-semibold" style={{ color: e.selected ? deptColor(e.dept) : '#9ca3af' }}>
+                        {deptShortLabel(e.dept)}
                       </span>
                       <button
                         type="button"
@@ -3127,7 +3211,7 @@ const SopRow = memo(function SopRow({
                           monthName: month,
                         })}
                         className="text-gray-500 hover:underline cursor-pointer font-medium px-0.5"
-                        title={`View SOPs in ${DEPT_ABBR[e.dept]} for ${month}`}
+                        title={`View SOPs in ${deptAbbrLabel(e.dept)} for ${month}`}
                       >
                         <CellCountText dept={e.dept} month={monthNum} />
                       </button>
@@ -3163,14 +3247,14 @@ const SopRow = memo(function SopRow({
             </div>
             {departments.map(dept => (
               <span key={`gtot-${dept}`} className="text-[11px] whitespace-nowrap">
-                <span className="font-semibold" style={{ color: DEPT_COLORS[dept] }}>
-                  {DEPT_SHORT[dept] || DEPT_ABBR[dept]}
+                <span className="font-semibold" style={{ color: deptColor(dept) }}>
+                  {deptShortLabel(dept)}
                 </span>{' '}
                 <button
                   type="button"
                   onClick={(ev) => openCountPopup(ev, { kind: 'dept-total', dept })}
                   className="text-gray-800 font-semibold hover:underline cursor-pointer"
-                  title={`View SOPs trained in ${DEPT_ABBR[dept]}`}
+                  title={`View SOPs trained in ${deptAbbrLabel(dept)}`}
                 >
                   <DeptTotalText dept={dept} />
                 </button>

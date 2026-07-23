@@ -20,6 +20,8 @@ import {
 import { getServerGroupedCache, setServerGroupedCache, invalidateDashboardSopsCache } from '@/lib/server-cache';
 import { getTrainingMatrixCacheEntry, setTrainingMatrixCached } from '@/lib/trainingMatrixCache';
 import { resolveEngGujFilePaths } from '@/lib/pathLanguageDetection';
+import { getTrainingMatrixDepartments } from '@/lib/trainingMatrixDepartments.server';
+import { canonTrainingMatrixDepartment } from '@/lib/trainingMatrixDepartments';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,21 +35,11 @@ export const dynamic = 'force-dynamic';
 
 const MCQ_CREATED_THRESHOLD = 90;
 
-const DEFAULT_DEPARTMENTS = ['QA', 'QC', 'Microbiology', 'Production', 'Store', 'Engineering', 'Personnel'];
-
 type LangKey = 'ENG' | 'GUJ';
 
 /** Map any stored department string onto the canonical Training Matrix set. */
 function canonDept(raw: string): string {
-  const t = String(raw || '').toLowerCase();
-  if (/micro/.test(t)) return 'Microbiology';
-  if (/engineer|maint/.test(t)) return 'Engineering';
-  if (/person|\bhr\b/.test(t)) return 'Personnel';
-  if (/\bqa\b|quality.?assur/.test(t)) return 'QA';
-  if (/\bqc\b|quality.?cont/.test(t)) return 'QC';
-  if (/store/.test(t)) return 'Store';
-  if (/prod/.test(t)) return 'Production';
-  return String(raw || '').trim();
+  return canonTrainingMatrixDepartment(raw);
 }
 
 function isValidDept(d: string): boolean {
@@ -365,7 +357,8 @@ async function computeOverviewPayload(forceFresh: boolean) {
       targetDate: string | null;
     }>();
     const dbDocPathsByCode: Record<string, { eng?: string; guj?: string; id?: string }> = {};
-    const deptSet = new Set<string>(DEFAULT_DEPARTMENTS);
+    const matrixDepartments = await getTrainingMatrixDepartments();
+    const deptSet = new Set<string>(matrixDepartments);
 
     for (const row of active) {
       const base = baseIdentifierFromIdentifier(row.identifier);
@@ -451,8 +444,10 @@ async function computeOverviewPayload(forceFresh: boolean) {
     };
 
     const departments = [
-      ...DEFAULT_DEPARTMENTS,
-      ...[...deptSet].filter((d) => !DEFAULT_DEPARTMENTS.includes(d)).sort((a, b) => a.localeCompare(b)),
+      ...matrixDepartments,
+      ...[...deptSet]
+        .filter((d) => !matrixDepartments.some((m) => m.toLowerCase() === d.toLowerCase()))
+        .sort((a, b) => a.localeCompare(b)),
     ];
 
     // 4. Department → base codes.

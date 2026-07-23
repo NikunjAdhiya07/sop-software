@@ -32,8 +32,8 @@ import type { DashboardStats, RegistrySOP } from '@/lib/types';
 // Preferred department display order; departments not listed fall after these.
 const DEPT_ORDER = ['QA', 'QC', 'Microbiology', 'Production', 'Store', 'Engineering', 'Personnel'];
 
-type ComponentStatus = 'completed' | 'partial' | 'not_completed' | 'na';
-type SopStatus = 'completed' | 'partial' | 'not_completed';
+type ComponentStatus = 'completed' | 'not_completed' | 'na';
+type SopStatus = 'completed' | 'not_completed';
 type ComponentKey = 'videos' | 'slides' | 'sopDoc' | 'mcq';
 
 interface SopBreakdown {
@@ -59,7 +59,6 @@ interface EmployeeTrainingRecord {
   isActive: boolean;
   totalSops: number;
   completedSops: number;
-  partialSops: number;
   notCompletedSops: number;
   overallPct: number;
   monthlyCounts: number[];
@@ -72,14 +71,13 @@ interface EmployeeTrainingRecord {
 const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 const emptySopMonthlyBreakdown = (): MonthBreakdown[] =>
-  Array.from({ length: 12 }, () => ({ completed: 0, partial: 0, notCompleted: 0 }));
+  Array.from({ length: 12 }, () => ({ completed: 0, notCompleted: 0 }));
 
-type EmpStatus = 'completed' | 'in_progress' | 'not_started';
+type EmpStatus = 'completed' | 'not_completed';
 
 function employeeStatus(r: EmployeeTrainingRecord): EmpStatus {
   if (r.totalSops > 0 && r.completedSops === r.totalSops) return 'completed';
-  if (r.completedSops === 0 && r.partialSops === 0) return 'not_started';
-  return 'in_progress';
+  return 'not_completed';
 }
 
 const DEFAULT_EMP_FILTER: EmpCapsuleFilter = { kind: 'overall', status: 'all' };
@@ -107,23 +105,22 @@ function isDefaultEmpFilter(filter: EmpCapsuleFilter): boolean {
 
 // Per-SOP roll-up across the employees assigned to it. A SOP counts once
 // (distinct), and its department-wide status follows the rule: Completed only
-// when every assigned employee finished it; Not Done when none has any progress;
-// Partial otherwise.
+// when every assigned employee finished it; otherwise Not Completed.
 
-interface ComponentRollup { completed: number; partial: number; not: number; }
+interface ComponentRollup { completed: number; not: number; }
 
 interface DeptAcc {
-  totalEmployees: number; empCompleted: number; empPartial: number; empNot: number;
+  totalEmployees: number; empCompleted: number; empNot: number;
   empTraining: number; empInduction: number;
   slides: ComponentRollup;
   videos: ComponentRollup;
   mcq: ComponentRollup;
 }
 
-const emptyComponentRollup = (): ComponentRollup => ({ completed: 0, partial: 0, not: 0 });
+const emptyComponentRollup = (): ComponentRollup => ({ completed: 0, not: 0 });
 
 const emptyDeptAcc = (): DeptAcc => ({
-  totalEmployees: 0, empCompleted: 0, empPartial: 0, empNot: 0,
+  totalEmployees: 0, empCompleted: 0, empNot: 0,
   empTraining: 0, empInduction: 0,
   slides: emptyComponentRollup(), videos: emptyComponentRollup(), mcq: emptyComponentRollup(),
 });
@@ -132,24 +129,21 @@ type ComponentRollupKey = 'slides' | 'videos' | 'mcq';
 
 function employeeComponentStatus(r: EmployeeTrainingRecord, key: ComponentRollupKey): EmpStatus {
   const statuses = r.sops.map((s) => s.components[key]).filter((st) => st !== 'na');
-  if (statuses.length === 0) return 'not_started';
+  if (statuses.length === 0) return 'not_completed';
   if (statuses.every((st) => st === 'completed')) return 'completed';
-  if (statuses.some((st) => st === 'completed' || st === 'partial')) return 'in_progress';
-  return 'not_started';
+  return 'not_completed';
 }
 
 function bumpComponentRollup(rollup: ComponentRollup, status: EmpStatus) {
   if (status === 'completed') rollup.completed++;
-  else if (status === 'in_progress') rollup.partial++;
   else rollup.not++;
 }
 
 function addToDeptAcc(acc: DeptAcc, r: EmployeeTrainingRecord) {
   acc.totalEmployees += 1;
   const st = employeeStatus(r);
-  if (st === 'completed')        acc.empCompleted++;
-  else if (st === 'in_progress') acc.empPartial++;
-  else                           acc.empNot++;
+  if (st === 'completed') acc.empCompleted++;
+  else                    acc.empNot++;
   if (r.hasTraining)  acc.empTraining++;
   if (r.hasInduction) acc.empInduction++;
   bumpComponentRollup(acc.slides, employeeComponentStatus(r, 'slides'));
@@ -159,21 +153,18 @@ function addToDeptAcc(acc: DeptAcc, r: EmployeeTrainingRecord) {
 
 function sopRowStatus(row: SopTrainingRow): SopStatus {
   if (row.assigned > 0 && row.completed === row.assigned) return 'completed';
-  if (row.assigned > 0 && (row.completed > 0 || row.partial > 0)) return 'partial';
   return 'not_completed';
 }
 
 function countRegistrySopStatus(rows: SopTrainingRow[]) {
   let sopCompleted = 0;
-  let sopPartial = 0;
   let sopNot = 0;
   for (const row of rows) {
     const status = sopRowStatus(row);
     if (status === 'completed') sopCompleted++;
-    else if (status === 'partial') sopPartial++;
     else sopNot++;
   }
-  return { sopCompleted, sopPartial, sopNot };
+  return { sopCompleted, sopNot };
 }
 
 function buildRegistrySopRows(
@@ -206,7 +197,6 @@ function buildRegistrySopRows(
       months: train?.months ?? [],
       assigned: train?.assigned ?? 0,
       completed: train?.completed ?? 0,
-      partial: train?.partial ?? 0,
       notCompleted: train?.notCompleted ?? 0,
       completionPct: train?.completionPct ?? 0,
       monthlyBreakdown: train?.monthlyBreakdown ?? emptySopMonthlyBreakdown(),
@@ -217,23 +207,22 @@ function buildRegistrySopRows(
 function deptAccToCapsule(
   department: string,
   acc: DeptAcc,
-  sopTotals: { totalSops: number; sopCompleted: number; sopPartial: number; sopNot: number },
+  sopTotals: { totalSops: number; sopCompleted: number; sopNot: number },
 ): TrainingDeptCapsule {
   return {
     department,
     totalSops: sopTotals.totalSops,
     sopCompleted: sopTotals.sopCompleted,
-    sopPartial: sopTotals.sopPartial,
     sopNot: sopTotals.sopNot,
     totalEmployees: acc.totalEmployees,
-    empCompleted: acc.empCompleted, empPartial: acc.empPartial, empNot: acc.empNot,
+    empCompleted: acc.empCompleted, empNot: acc.empNot,
     empTraining: acc.empTraining, empInduction: acc.empInduction,
     slidesTotal: acc.totalEmployees, slidesCompleted: acc.slides.completed,
-    slidesPartial: acc.slides.partial, slidesNot: acc.slides.not,
+    slidesNot: acc.slides.not,
     videosTotal: acc.totalEmployees, videosCompleted: acc.videos.completed,
-    videosPartial: acc.videos.partial, videosNot: acc.videos.not,
+    videosNot: acc.videos.not,
     mcqTotal: acc.totalEmployees, mcqCompleted: acc.mcq.completed,
-    mcqPartial: acc.mcq.partial, mcqNot: acc.mcq.not,
+    mcqNot: acc.mcq.not,
   };
 }
 
@@ -255,7 +244,6 @@ function buildSopTrainingRows(records: EmployeeTrainingRecord[], dept: string): 
           months: s.months,
           assigned: 0,
           completed: 0,
-          partial: 0,
           notCompleted: 0,
           completionPct: 0,
           monthlyBreakdown: emptySopMonthlyBreakdown(),
@@ -269,13 +257,11 @@ function buildSopTrainingRows(records: EmployeeTrainingRecord[], dept: string): 
       if (s.months.length > row.months.length) row.months = s.months;
       row.assigned++;
       if (s.status === 'completed') row.completed++;
-      else if (s.status === 'partial') row.partial++;
       else row.notCompleted++;
       for (const m of s.months) {
         const idx = m - 1;
         if (idx < 0 || idx > 11) continue;
         if (s.status === 'completed') row.monthlyBreakdown[idx].completed++;
-        else if (s.status === 'partial') row.monthlyBreakdown[idx].partial++;
         else row.monthlyBreakdown[idx].notCompleted++;
       }
     }
@@ -287,9 +273,8 @@ function buildSopTrainingRows(records: EmployeeTrainingRecord[], dept: string): 
 }
 
 const SOP_STATUS_META: Record<SopStatus, { label: string; chip: string }> = {
-  completed:     { label: 'Completed',           chip: 'bg-green-100 text-green-700' },
-  partial:       { label: 'Partially Completed', chip: 'bg-amber-100 text-amber-700' },
-  not_completed: { label: 'Not Completed',       chip: 'bg-gray-100 text-gray-600' },
+  completed:     { label: 'Completed',     chip: 'bg-green-100 text-green-700' },
+  not_completed: { label: 'Not Completed', chip: 'bg-gray-100 text-gray-600' },
 };
 
 // ─── SOP drill-down modal ────────────────────────────────────────────────────
@@ -474,7 +459,6 @@ export default function EmployeeTrainingDashboardPage() {
         isActive:         r.isActive,
         totalSops:        r.totalSops,
         completedSops:    r.completedSops,
-        partialSops:      r.partialSops,
         notCompletedSops: r.notCompletedSops,
         overallPct:       r.overallPct,
         monthlyBreakdown: r.monthlyBreakdown ?? buildMonthlyBreakdown(r.sops),
@@ -500,11 +484,21 @@ export default function EmployeeTrainingDashboardPage() {
   const capsules = useMemo<TrainingDeptCapsule[]>(() => {
     const total = emptyDeptAcc();
     const byDept = new Map<string, DeptAcc>();
+    const dashboardDeptNames = (sopStats?.departments ?? [])
+      .map((d) => d.department)
+      .filter((d) => d && d !== 'Total');
+    const allowed = new Set(dashboardDeptNames.map((d) => d.toLowerCase()));
+
     for (const r of records) {
-      const name = r.department || 'Unknown';
+      const name = r.department || '';
+      if (!name || !allowed.has(name.toLowerCase())) continue;
       if (!byDept.has(name)) byDept.set(name, emptyDeptAcc());
       addToDeptAcc(byDept.get(name)!, r);
       addToDeptAcc(total, r);
+    }
+    // Ensure every dashboard dept appears as a capsule (even with 0 employees).
+    for (const name of dashboardDeptNames) {
+      if (!byDept.has(name)) byDept.set(name, emptyDeptAcc());
     }
     const statsByDept = new Map(
       (sopStats?.departments ?? []).map((d) => [d.department, d.total]),
@@ -560,14 +554,16 @@ export default function EmployeeTrainingDashboardPage() {
         <div className="mx-auto flex w-full max-w-[1920px] items-center justify-between px-2 py-3 sm:px-4">
           <div className="flex items-center gap-3">
             <Link href="/lms/admin" className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-gray-800">
-              <ArrowLeft className="h-3.5 w-3.5" /> LMS Settings
+              <ArrowLeft className="h-3.5 w-3.5" /> SOP Exam Settings
             </Link>
             <div className="h-4 w-px bg-gray-200" />
             <h1 className="text-sm font-bold tracking-tight">Employee Training Dashboard</h1>
           </div>
-          <button onClick={() => load(true)} disabled={loading} className="rounded-lg border border-gray-200 p-1.5 text-gray-400 hover:bg-gray-50">
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => load(true)} disabled={loading} className="rounded-lg border border-gray-200 p-1.5 text-gray-400 hover:bg-gray-50">
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -650,7 +646,7 @@ export default function EmployeeTrainingDashboardPage() {
               rows={gridRows}
               rosterLoading={loading}
               trainingLoading={false}
-              showActions={false}
+              showActions
             />
           </div>
         ) : (

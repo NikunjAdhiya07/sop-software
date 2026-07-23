@@ -1,17 +1,106 @@
 import { NextRequest, NextResponse } from 'next/server';
+import mongoose from 'mongoose';
 import { cookies } from 'next/headers';
 import { connectDB } from '@/lib/mongodb';
 import { verifyLmsToken, LMS_COOKIE } from '@/lib/lms-session';
 import MCQBank from '@/models/MCQBank';
 import Employee from '@/models/Employee';
-import ExamSettings, { resolvePassingScore } from '@/models/lms/ExamSettings';
+import {
+  resolveExamSettingsForSop,
+  toLearnerQuizSettings,
+} from '@/lib/lms-exam-settings';
+import { sopFamilyIdentifierRegex } from '@/lib/sop-utils';
+import type { ShuffleMode } from '@/models/lms/SopExamSettings';
 
 export const dynamic = 'force-dynamic';
 
 type Params = { params: Promise<{ sopCode: string }> };
 
-// GET /api/lms/quiz/[sopCode]?mode=trial|exam
-// Pulls questions from MCQBank (embedded mcqs array), converts to A/B/C/D format.
+type RawMcq = {
+  bankId: unknown;
+  question: string;
+  options: string[];
+  correctAnswer: string;
+  explanation?: string;
+};
+
+function toAbcdQuestions(raw: RawMcq[]) {
+  return raw.map((q, i) => {
+    const opts: string[] = Array.isArray(q.options) ? q.options : [];
+    let letter: 'A' | 'B' | 'C' | 'D' = 'A';
+    const letters = ['A', 'B', 'C', 'D'] as const;
+    if (['A', 'B', 'C', 'D'].includes(q.correctAnswer)) {
+      letter = q.correctAnswer as 'A' | 'B' | 'C' | 'D';
+    } else {
+      const idx = opts.findIndex(
+        (o) => o.trim().toLowerCase() === String(q.correctAnswer).trim().toLowerCase(),
+      );
+      if (idx >= 0 && idx < 4) letter = letters[idx];
+    }
+    return {
+      _id: `${String(q.bankId)}_${i}`,
+      question: q.question,
+      optionA: opts[0] ?? '',
+      optionB: opts[1] ?? '',
+      optionC: opts[2] ?? '',
+      optionD: opts[3] ?? '',
+      correctAnswer: letter,
+      explanation: q.explanation ?? '',
+    };
+  });
+}
+
+/**
+ * Pull MCQs for a SOP. Shuffle mode controls selection:
+ * - questions / both → random sample (different set per employee)
+ * - options / none   → stable ordered slice (same set for everyone)
+ */
+async function fetchQuestions(
+  sopCode: string,
+  language: string,
+  count: number,
+  shuffleMode: ShuffleMode,
+): Promise<RawMcq[]> {
+  if (count <= 0) return [];
+
+  const familyRegex = sopFamilyIdentifierRegex(sopCode);
+  const randomize = shuffleMode === 'questions' || shuffleMode === 'both';
+
+  const pipeline: mongoose.PipelineStage[] = [
+    {
+      $match: {
+        sopIdentifier: { $regex: familyRegex },
+        isObsolete: { $ne: true },
+        language,
+      },
+    },
+    { $unwind: '$mcqs' },
+    { $match: { 'mcqs.isSimilar': { $ne: true } } },
+  ];
+
+  if (randomize) {
+    pipeline.push({ $sample: { size: count } });
+  } else {
+    // Stable order so every employee gets the same questions.
+    pipeline.push({ $sort: { 'mcqs.question': 1, 'mcqs.sopReference': 1 } });
+    pipeline.push({ $limit: count });
+  }
+
+  pipeline.push({
+    $project: {
+      _id: 0,
+      bankId: '$_id',
+      question: '$mcqs.question',
+      options: '$mcqs.options',
+      correctAnswer: '$mcqs.correctAnswer',
+      explanation: '$mcqs.explanation',
+    },
+  });
+
+  return MCQBank.aggregate<RawMcq>(pipeline);
+}
+
+// GET /api/lms/quiz/[sopCode]?mode=trial|exam&lang=en|gu
 export async function GET(req: NextRequest, { params }: Params) {
   const jar = await cookies();
   const payload = verifyLmsToken(jar.get(LMS_COOKIE)?.value);
@@ -24,93 +113,42 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     await connectDB();
 
-    const settings = await ExamSettings.findOneAndUpdate(
-      { settingsKey: 'global' },
-      { $setOnInsert: { settingsKey: 'global' } },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    ).lean();
+    const employee = await Employee.findById(payload.sub)
+      .select('department designation')
+      .lean();
+
+    const resolved = await resolveExamSettingsForSop(sopCode, {
+      id: payload.sub,
+      department: employee?.department ?? '',
+      designation: employee?.designation ?? '',
+    });
 
     const count = mode === 'trial'
-      ? (settings?.trialQuestionCount ?? 5)
-      : (settings?.examQuestionCount ?? 20);
+      ? resolved.trialQuestionCount
+      : resolved.examQuestionCount;
 
-    // Resolve passing score for this specific employee
-    const employee = await Employee.findById(payload.sub)
-      .select('department designation').lean();
-    const passingScore = resolvePassingScore(
-      settings?.passingScoreRules ?? [],
-      employee?.department ?? '',
-      employee?.designation ?? '',
-      settings?.passingScore ?? 80,
-      payload.sub,
-    );
+    const learnerSettings = toLearnerQuizSettings(resolved);
 
-    const escaped = sopCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (count <= 0) {
+      return NextResponse.json({
+        questions: [],
+        mode,
+        settings: learnerSettings,
+      });
+    }
 
-    // Unwind embedded questions, sample, then project into A/B/C/D shape
-    const raw = await MCQBank.aggregate([
-      {
-        $match: {
-          sopIdentifier: { $regex: new RegExp(`^${escaped}`, 'i') },
-          isObsolete: { $ne: true },
-          language,
-        },
-      },
-      { $unwind: '$mcqs' },
-      // Exclude questions flagged as duplicates
-      { $match: { 'mcqs.isSimilar': { $ne: true } } },
-      { $sample: { size: count } },
-      {
-        $project: {
-          _id: 0,
-          bankId: '$_id',
-          question:      '$mcqs.question',
-          options:       '$mcqs.options',
-          correctAnswer: '$mcqs.correctAnswer',
-          explanation:   '$mcqs.explanation',
-        },
-      },
-    ]);
-
-    // Convert options array + text correctAnswer → optionA/B/C/D + letter correctAnswer
-    const questions = raw.map((q, i) => {
-      const opts: string[] = Array.isArray(q.options) ? q.options : [];
-      // correctAnswer might already be a letter (A/B/C/D) or the full text
-      let letter: 'A' | 'B' | 'C' | 'D' = 'A';
-      const letters = ['A', 'B', 'C', 'D'] as const;
-      if (['A', 'B', 'C', 'D'].includes(q.correctAnswer)) {
-        letter = q.correctAnswer as 'A' | 'B' | 'C' | 'D';
-      } else {
-        const idx = opts.findIndex(
-          (o) => o.trim().toLowerCase() === String(q.correctAnswer).trim().toLowerCase(),
-        );
-        if (idx >= 0 && idx < 4) letter = letters[idx];
-      }
-      return {
-        _id: `${String(q.bankId)}_${i}`,
-        question:      q.question,
-        optionA:       opts[0] ?? '',
-        optionB:       opts[1] ?? '',
-        optionC:       opts[2] ?? '',
-        optionD:       opts[3] ?? '',
-        correctAnswer: letter,
-        explanation:   q.explanation ?? '',
-      };
-    });
+    const raw = await fetchQuestions(sopCode, language, count, resolved.shuffleMode);
+    const questions = toAbcdQuestions(raw);
 
     return NextResponse.json({
       questions,
       mode,
-      settings: {
-        passingScore:          passingScore,
-        timeLimitMinutes:      settings?.timeLimitMinutes      ?? 0,
-        shuffleOptions:        settings?.shuffleOptions        ?? false,
-        showAnswersAfterTrial: settings?.showAnswersAfterTrial ?? true,
-        maxAttempts:           settings?.maxAttempts           ?? 0,
-        examQuestionCount:     settings?.examQuestionCount      ?? count,
-      },
+      settings: learnerSettings,
     });
   } catch (err: unknown) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
   }
 }

@@ -41,7 +41,7 @@ const ExamSettingsSchema = new Schema<IExamSettings>(
   {
     settingsKey:          { type: String, default: 'global', unique: true },
     examQuestionCount:    { type: Number, default: 20,  min: 1, max: 200 },
-    trialQuestionCount:   { type: Number, default: 5,   min: 1, max: 50  },
+    trialQuestionCount:   { type: Number, default: 5,   min: 0, max: 50  },
     passingScore:         { type: Number, default: 80,  min: 1, max: 100 },
     passingScoreRules:    { type: [PassingScoreRuleSchema], default: [] },
     timeLimitMinutes:     { type: Number, default: 0,   min: 0           },

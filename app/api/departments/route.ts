@@ -3,6 +3,7 @@ import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
 import Department from "@/models/Department";
 import { sortByDeptOrder } from "@/lib/sop-utils";
+import { isDashboardDepartmentName } from "@/lib/dashboardDepartments";
 
 // Password required to delete a department (also enforced in the UI).
 const DELETE_PASSWORD = "indiana132";
@@ -14,8 +15,9 @@ export async function GET() {
       SOP.distinct("department") as Promise<string[]>,
       Department.distinct("name") as Promise<string[]>,
     ]);
-    const merged = sortByDeptOrder([...new Set([...sopDepts, ...persistedDepts])]);
-    return NextResponse.json({ departments: merged });
+    const merged = sortByDeptOrder(
+      [...new Set([...sopDepts, ...persistedDepts])].filter(isDashboardDepartmentName),
+    );    return NextResponse.json({ departments: merged });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to fetch departments" },

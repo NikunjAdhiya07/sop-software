@@ -5,15 +5,15 @@ import { BarChart2, ChevronDown, FileText, Users, Video, Presentation, ListCheck
 
 export interface TrainingDeptCapsule {
   department: string;
-  totalSops: number; sopCompleted: number; sopPartial: number; sopNot: number;
-  totalEmployees: number; empCompleted: number; empPartial: number; empNot: number;
+  totalSops: number; sopCompleted: number; sopNot: number;
+  totalEmployees: number; empCompleted: number; empNot: number;
   /** Employees with at least one regular training SOP. */
   empTraining: number;
   /** Employees with at least one induction SOP. */
   empInduction: number;
-  slidesTotal: number; slidesCompleted: number; slidesPartial: number; slidesNot: number;
-  videosTotal: number; videosCompleted: number; videosPartial: number; videosNot: number;
-  mcqTotal: number; mcqCompleted: number; mcqPartial: number; mcqNot: number;
+  slidesTotal: number; slidesCompleted: number; slidesNot: number;
+  videosTotal: number; videosCompleted: number; videosNot: number;
+  mcqTotal: number; mcqCompleted: number; mcqNot: number;
 }
 
 /* ─── Simple label + single value, with optional active highlight ──────────────
@@ -40,8 +40,8 @@ function MetricRow({
   );
 }
 
-/* ─── 3 compact columns in a row (mirrors the dashboard's Expir./Near/No Dt) ── */
-function TriColumns({
+/* ─── Compact columns in a row (mirrors the dashboard's Expir./Near/No Dt) ── */
+function StatusColumns({
   cols, onClick,
 }: {
   cols: { label: string; value: number; cls?: string; title?: string; onClick?: () => void }[];
@@ -58,34 +58,30 @@ function TriColumns({
   );
 }
 
-/* ─── Done / Partial / Not block (label row + tri-column counts) ─────────────── */
+/* ─── Done / Not block (label row + two-column counts) ─────────────── */
 function StatusBlock({
-  label, total, done, partial, notDone,
-  onTotalClick, onDoneClick, onPartialClick, onNotClick, onClick,
-  doneTitle = "Completed", partialTitle = "Partially completed", notTitle = "Not completed",
+  label, total, done, notDone,
+  onTotalClick, onDoneClick, onNotClick, onClick,
+  doneTitle = "Completed", notTitle = "Not completed",
 }: {
   label: ReactNode;
   total: number;
   done: number;
-  partial: number;
   notDone: number;
   onTotalClick?: () => void;
   onDoneClick?: () => void;
-  onPartialClick?: () => void;
   onNotClick?: () => void;
   onClick?: () => void;
   doneTitle?: string;
-  partialTitle?: string;
   notTitle?: string;
 }) {
   return (
     <>
       <MetricRow label={label} value={total} onClick={onTotalClick ?? onClick} />
-      <TriColumns
+      <StatusColumns
         cols={[
-          { label: "Done",    value: done,    cls: done > 0 ? "text-emerald-700" : "text-gray-700",    title: doneTitle,    onClick: onDoneClick ?? onClick },
-          { label: "Partial", value: partial, cls: partial > 0 ? "text-amber-600" : "text-gray-700", title: partialTitle, onClick: onPartialClick ?? onClick },
-          { label: "Not",     value: notDone, cls: notDone > 0 ? "text-red-600" : "text-gray-700",   title: notTitle,     onClick: onNotClick ?? onClick },
+          { label: "Done", value: done,    cls: done > 0 ? "text-emerald-700" : "text-gray-700",  title: doneTitle, onClick: onDoneClick ?? onClick },
+          { label: "Not",  value: notDone, cls: notDone > 0 ? "text-red-600" : "text-gray-700", title: notTitle,  onClick: onNotClick ?? onClick },
         ]}
       />
     </>
@@ -93,8 +89,8 @@ function StatusBlock({
 }
 
 /* ─── Individual department card (memoized) ───────────────────────────────── */
-export type SopCapsuleFilter = "all" | "completed" | "partial" | "not_completed";
-export type EmpCapsuleStatus = "all" | "completed" | "in_progress" | "not_started";
+export type SopCapsuleFilter = "all" | "completed" | "not_completed";
+export type EmpCapsuleStatus = "all" | "completed" | "not_completed";
 export type EmpCapsuleKind = "overall" | "slides" | "videos" | "mcq" | "training" | "induction";
 export type EmpCapsuleFilter = { kind: EmpCapsuleKind; status: EmpCapsuleStatus };
 
@@ -148,11 +144,10 @@ const DepartmentCard = memo(function DepartmentCard({
           value={cap.totalSops}
           onClick={() => onSopFilter?.(dept, "all")}
         />
-        <TriColumns
+        <StatusColumns
           cols={[
-            { label: "Done",    value: cap.sopCompleted, cls: cap.sopCompleted > 0 ? "text-emerald-700" : "text-gray-700", title: "Completed", onClick: () => onSopFilter?.(dept, "completed") },
-            { label: "Partial", value: cap.sopPartial,   cls: cap.sopPartial > 0 ? "text-amber-600" : "text-gray-700",    title: "Partially completed", onClick: () => onSopFilter?.(dept, "partial") },
-            { label: "Not",     value: cap.sopNot,       cls: cap.sopNot > 0 ? "text-red-600" : "text-gray-700",          title: "Not completed", onClick: () => onSopFilter?.(dept, "not_completed") },
+            { label: "Done", value: cap.sopCompleted, cls: cap.sopCompleted > 0 ? "text-emerald-700" : "text-gray-700", title: "Completed", onClick: () => onSopFilter?.(dept, "completed") },
+            { label: "Not",  value: cap.sopNot,       cls: cap.sopNot > 0 ? "text-red-600" : "text-gray-700",          title: "Not completed", onClick: () => onSopFilter?.(dept, "not_completed") },
           ]}
         />
 
@@ -162,15 +157,12 @@ const DepartmentCard = memo(function DepartmentCard({
           label={<span className="inline-flex items-center gap-0.5"><Users className="h-3 w-3 shrink-0" aria-hidden /> Employees</span>}
           total={cap.totalEmployees}
           done={cap.empCompleted}
-          partial={cap.empPartial}
           notDone={cap.empNot}
           onTotalClick={emp("overall", "all")}
           onDoneClick={emp("overall", "completed")}
-          onPartialClick={emp("overall", "in_progress")}
-          onNotClick={emp("overall", "not_started")}
+          onNotClick={emp("overall", "not_completed")}
           doneTitle="Completed all training"
-          partialTitle="Partially completed"
-          notTitle="Not started"
+          notTitle="Not completed"
         />
 
         <div className="h-1" />
@@ -179,12 +171,10 @@ const DepartmentCard = memo(function DepartmentCard({
           label={<span className="inline-flex items-center gap-0.5"><Presentation className="h-3 w-3 shrink-0" aria-hidden /> Slides</span>}
           total={cap.slidesTotal}
           done={cap.slidesCompleted}
-          partial={cap.slidesPartial}
           notDone={cap.slidesNot}
           onTotalClick={emp("slides", "all")}
           onDoneClick={emp("slides", "completed")}
-          onPartialClick={emp("slides", "in_progress")}
-          onNotClick={emp("slides", "not_started")}
+          onNotClick={emp("slides", "not_completed")}
         />
 
         <div className="h-1" />
@@ -193,12 +183,10 @@ const DepartmentCard = memo(function DepartmentCard({
           label={<span className="inline-flex items-center gap-0.5"><Video className="h-3 w-3 shrink-0" aria-hidden /> Videos</span>}
           total={cap.videosTotal}
           done={cap.videosCompleted}
-          partial={cap.videosPartial}
           notDone={cap.videosNot}
           onTotalClick={emp("videos", "all")}
           onDoneClick={emp("videos", "completed")}
-          onPartialClick={emp("videos", "in_progress")}
-          onNotClick={emp("videos", "not_started")}
+          onNotClick={emp("videos", "not_completed")}
         />
 
         <div className="h-1" />
@@ -207,17 +195,15 @@ const DepartmentCard = memo(function DepartmentCard({
           label={<span className="inline-flex items-center gap-0.5"><ListChecks className="h-3 w-3 shrink-0" aria-hidden /> MCQs</span>}
           total={cap.mcqTotal}
           done={cap.mcqCompleted}
-          partial={cap.mcqPartial}
           notDone={cap.mcqNot}
           onTotalClick={emp("mcq", "all")}
           onDoneClick={emp("mcq", "completed")}
-          onPartialClick={emp("mcq", "in_progress")}
-          onNotClick={emp("mcq", "not_started")}
+          onNotClick={emp("mcq", "not_completed")}
         />
 
         <div className="h-1" />
 
-        <TriColumns
+        <StatusColumns
           cols={[
             { label: "Training",  value: cap.empTraining,  cls: cap.empTraining > 0 ? "text-blue-600" : "text-gray-700",   title: "Employees with regular training SOPs", onClick: emp("training", "all") },
             { label: "Induction", value: cap.empInduction, cls: cap.empInduction > 0 ? "text-orange-500" : "text-gray-700", title: "Employees with induction training SOPs", onClick: emp("induction", "all") },

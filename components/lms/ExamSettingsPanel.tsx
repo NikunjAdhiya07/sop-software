@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, type ReactNode } from 'react';
+import Link from 'next/link';
 import {
   AlertCircle, Award, Check, ClipboardList, Eye, Hash, Loader2, Plus,
   RotateCcw, Save, Shuffle, Timer, Trash2, type LucideIcon,
@@ -10,6 +11,7 @@ import {
   LMS_CLIENT_FRESH_MS,
   readLmsClientCache,
   writeLmsClientCache,
+  invalidateLmsClientFields,
 } from '@/lib/lmsCache';
 
 export interface PassingScoreRule {
@@ -53,6 +55,52 @@ export const EXAM_SETTINGS_DEFAULT: ExamSettings = {
   maxAttempts: 0,
 };
 
+type ShuffleMode = 'options' | 'questions' | 'both' | 'none';
+
+const SHUFFLE_OPTIONS: {
+  value: ShuffleMode;
+  title: string;
+  description: string;
+}[] = [
+  {
+    value: 'options',
+    title: '1 — Shuffle options',
+    description: 'Same questions for every employee; A/B/C/D order is randomised.',
+  },
+  {
+    value: 'questions',
+    title: '2 — Shuffle questions',
+    description: 'Different questions are drawn for different employees from the bank.',
+  },
+  {
+    value: 'both',
+    title: '3 — Shuffle both',
+    description: 'Different questions per employee, and options are randomised.',
+  },
+  {
+    value: 'none',
+    title: '4 — No shuffle',
+    description: 'Same questions and same option order for every employee.',
+  },
+];
+
+function shuffleModeFromFlags(shuffleQuestions: boolean, shuffleOptions: boolean): ShuffleMode {
+  if (shuffleQuestions && shuffleOptions) return 'both';
+  if (shuffleQuestions) return 'questions';
+  if (shuffleOptions) return 'options';
+  return 'none';
+}
+
+function flagsFromShuffleMode(mode: ShuffleMode): {
+  shuffleQuestions: boolean;
+  shuffleOptions: boolean;
+} {
+  return {
+    shuffleQuestions: mode === 'questions' || mode === 'both',
+    shuffleOptions: mode === 'options' || mode === 'both',
+  };
+}
+
 /** A titled, bordered card that groups related settings rows vertically. */
 function SettingsCard({
   icon: Icon, title, subtitle, children, bodyClassName,
@@ -85,25 +133,45 @@ function NumberInput({
   label: string; description: string; value: number;
   onChange: (v: number) => void; min: number; max?: number; unit?: string;
 }) {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  const commit = (raw: string) => {
+    const n = Number(raw);
+    let next = Number.isFinite(n) ? Math.round(n) : min;
+    if (next < min) next = min;
+    if (max != null && next > max) next = max;
+    setText(String(next));
+    if (next !== value) onChange(next);
+  };
+
   return (
     <div className="flex items-center justify-between gap-4 px-5 py-4">
       <div className="min-w-0 flex-1">
         <p className="text-sm font-semibold text-gray-800">{label}</p>
         <p className="mt-0.5 text-xs leading-relaxed text-gray-400">{description}</p>
       </div>
-      <div className="flex shrink-0 items-center rounded-lg border border-gray-200 transition focus-within:border-purple-300 focus-within:ring-2 focus-within:ring-purple-100">
+      <div className="flex shrink-0 items-center gap-1.5">
         <input
-          type="number"
-          min={min}
-          max={max}
-          value={value}
+          type="text"
+          inputMode="numeric"
+          value={text}
           onChange={(e) => {
-            const v = Number(e.target.value);
-            if (!isNaN(v) && v >= min && (!max || v <= max)) onChange(v);
+            const raw = e.target.value.trim();
+            if (raw === '' || /^\d+$/.test(raw)) setText(raw);
           }}
-          className={`w-14 bg-transparent py-2 text-center text-sm font-bold text-gray-800 focus:outline-none ${unit ? 'pl-3' : 'px-3'}`}
+          onBlur={() => commit(text)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur();
+            }
+          }}
+          className="w-16 rounded-lg border border-gray-300 bg-white px-2 py-2 text-center text-sm font-bold text-gray-900 shadow-sm transition focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-100"
         />
-        {unit && <span className="pr-3 text-xs font-medium text-gray-400">{unit}</span>}
+        {unit && <span className="text-xs font-semibold text-gray-700">{unit}</span>}
       </div>
     </div>
   );
@@ -371,7 +439,7 @@ export function useExamSettings() {
       setLoading(false);
       if (Date.now() - cached.cachedAt <= LMS_CLIENT_FRESH_MS) return;
     }
-    fetch('/api/lms/admin/exam-settings')
+    fetch('/api/lms/admin/exam-settings', { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => {
         if (d.settings) {
@@ -385,6 +453,11 @@ export function useExamSettings() {
 
   const set = <K extends keyof ExamSettings>(key: K, value: ExamSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
+    setSaved(false);
+  };
+
+  const patch = (partial: Partial<ExamSettings>) => {
+    setSettings((prev) => ({ ...prev, ...partial }));
     setSaved(false);
   };
 
@@ -403,6 +476,8 @@ export function useExamSettings() {
       const merged = { ...EXAM_SETTINGS_DEFAULT, ...json.settings };
       setSettings(merged);
       writeLmsClientCache(lmsClientFields.adminExamSettings, { settings: merged });
+      // SOP table embeds global defaults — bust that cache so Global-sourced rows refresh.
+      invalidateLmsClientFields(lmsClientFields.adminSopExamSettings);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } finally {
@@ -410,18 +485,28 @@ export function useExamSettings() {
     }
   };
 
-  return { settings, set, loading, saving, saved, error, save };
+  return { settings, set, patch, loading, saving, saved, error, save };
 }
 
 export function ExamSettingsForm({
   settings,
   set,
+  patch,
   error,
 }: {
   settings: ExamSettings;
   set: <K extends keyof ExamSettings>(key: K, value: ExamSettings[K]) => void;
+  patch?: (partial: Partial<ExamSettings>) => void;
   error: string;
 }) {
+  const setShuffleMode = (mode: ShuffleMode) => {
+    const flags = flagsFromShuffleMode(mode);
+    if (patch) patch(flags);
+    else {
+      set('shuffleQuestions', flags.shuffleQuestions);
+      set('shuffleOptions', flags.shuffleOptions);
+    }
+  };
   return (
     <div className="space-y-5">
       {error && (
@@ -439,7 +524,7 @@ export function ExamSettingsForm({
           <div className="flex items-start gap-3 rounded-xl border border-purple-100 bg-white/70 p-3.5">
             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-600 text-[11px] font-bold text-white">1</span>
             <p className="text-sm leading-relaxed text-gray-700">
-              <span className="font-semibold text-gray-900">Demo Assessment</span> — {settings.trialQuestionCount} questions, no pass/fail{settings.showAnswersAfterTrial ? ', answers shown after' : ''}.
+              <span className="font-semibold text-gray-900">Demo Assessment</span> — {settings.trialQuestionCount === 0 ? 'skipped' : `${settings.trialQuestionCount} questions, no pass/fail${settings.showAnswersAfterTrial ? ', answers shown after' : ''}`}.
             </p>
           </div>
           <div className="flex items-start gap-3 rounded-xl border border-purple-100 bg-white/70 p-3.5">
@@ -454,10 +539,10 @@ export function ExamSettingsForm({
       <SettingsCard icon={Hash} title="Question Count" subtitle="How many questions appear in each stage.">
         <NumberInput
           label="Demo Assessment Questions"
-          description="Questions shown on the first attempt (demo — no pass/fail, answers revealed after)."
+          description="Questions shown on the first attempt (demo — no pass/fail). Set to 0 to skip the demo."
           value={settings.trialQuestionCount}
           onChange={(v) => set('trialQuestionCount', v)}
-          min={1} max={50}
+          min={0} max={50}
         />
         <NumberInput
           label="Exam Questions"
@@ -501,19 +586,40 @@ export function ExamSettingsForm({
         />
       </SettingsCard>
 
-      <SettingsCard icon={Shuffle} title="Shuffle" subtitle="Randomise order to discourage answer sharing.">
-        <Toggle
-          label="Shuffle Questions"
-          description="Randomise the order of questions in each attempt."
-          checked={settings.shuffleQuestions}
-          onChange={(v) => set('shuffleQuestions', v)}
-        />
-        <Toggle
-          label="Shuffle Answer Options"
-          description="Randomise the order of A/B/C/D options for each question."
-          checked={settings.shuffleOptions}
-          onChange={(v) => set('shuffleOptions', v)}
-        />
+      <SettingsCard icon={Shuffle} title="Shuffle Mode" subtitle="Four ways to present questions to employees.">
+        <div className="space-y-2 px-5 py-4">
+          {SHUFFLE_OPTIONS.map((opt) => {
+            const active = shuffleModeFromFlags(settings.shuffleQuestions, settings.shuffleOptions) === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setShuffleMode(opt.value)}
+                className={`flex w-full items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
+                  active
+                    ? 'border-purple-300 bg-purple-50 ring-2 ring-purple-100'
+                    : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                <span
+                  className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+                    active ? 'border-purple-600' : 'border-gray-400'
+                  }`}
+                >
+                  {active && <span className="h-2 w-2 rounded-full bg-purple-600" />}
+                </span>
+                <span className="min-w-0">
+                  <span className={`block text-sm font-bold ${active ? 'text-purple-900' : 'text-gray-900'}`}>
+                    {opt.title}
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-gray-700">
+                    {opt.description}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </SettingsCard>
 
       <SettingsCard icon={Eye} title="Demo & Retake" subtitle="Control answer visibility and post-pass retakes.">
@@ -534,7 +640,12 @@ export function ExamSettingsForm({
       <div className="flex items-start gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
         <RotateCcw className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
         <p className="text-xs leading-relaxed text-amber-700">
-          These settings apply globally to all SOPs. Changes take effect immediately for new quiz sessions.
+          These are the <span className="font-semibold">default</span> settings used when a SOP has no custom override.
+          Edit per-SOP values from{' '}
+          <Link href="/lms/admin" className="font-semibold underline underline-offset-2 hover:text-amber-900">
+            SOP Exam Settings
+          </Link>
+          . Changes take effect immediately for new quiz sessions.
         </p>
       </div>
     </div>

@@ -67,13 +67,16 @@ export async function POST(_req: NextRequest, { params }: Params) {
 
     // Verify progress is complete AND the quiz was actually passed
     const progress = await LearningProgress.findOne({ employeeId: payload.sub, sopCode }).lean();
-    if (!progress || progress.overallPercentage < 100) {
+    if (!progress || progress.overallPercentage < 100 || progress.status !== 'completed') {
       return NextResponse.json({ error: 'Training not yet completed' }, { status: 400 });
     }
     const stepsRecord = progress.steps as Record<string, { passed?: boolean; completed?: boolean }> | undefined;
-    const hasQuiz = progress.availableSteps?.includes('quiz');
-    if (hasQuiz && stepsRecord?.quiz?.passed !== true) {
-      return NextResponse.json({ error: 'Assessment not passed' }, { status: 400 });
+    const quizKeys = (progress.availableSteps || []).filter((k) => k === 'quiz' || k === 'quizGu');
+    if (quizKeys.length > 0) {
+      const quizPassed = quizKeys.some((k) => stepsRecord?.[k]?.passed === true || stepsRecord?.[k]?.completed === true);
+      if (!quizPassed) {
+        return NextResponse.json({ error: 'Assessment not passed' }, { status: 400 });
+      }
     }
 
     // Get employee details
@@ -92,7 +95,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
     }).select('name version').sort({ versionNum: -1 }).lean<{ name: string; version?: string }>();
 
     const stepsData = progress.steps as Record<string, { score?: number; passed?: boolean }> | undefined;
-    const quizScore = stepsData?.quiz?.score ?? 0;
+    const quizScore = stepsData?.quiz?.score ?? stepsData?.quizGu?.score ?? 0;
 
     const cert = await Certificate.create({
       certificateNumber: generateCertNumber(),

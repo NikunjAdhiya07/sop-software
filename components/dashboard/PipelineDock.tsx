@@ -1,66 +1,104 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, Loader2, X, XCircle } from "lucide-react";
 import { bustDashboardCache } from "@/lib/cache";
 import { useDashboardStore } from "@/lib/store/dashboard-store";
 import { displaySopCode } from "@/lib/sop-display";
 
-const STAGE_KEYS = [
-  "mcq_generating",
-  "similarity_checking",
-  "compliance_fixing",
-  "updating_platform",
-] as const;
+type McqLive = {
+  status?: string;
+  phase?: string;
+  percent?: number;
+  error?: string | null;
+};
 
-interface PipelineApiResponse {
-  identifier: string;
-  stage: string;
-  progress: number;
-  status: "running" | "done" | "failed";
-  label: string;
-  estimatedSecondsRemaining: number;
-  stages: Array<{ key: string; label: string; complete: boolean; active: boolean }>;
-}
+type SopLive = {
+  mcq: McqLive | null;
+  complianceActive: boolean;
+  complianceName?: string;
+};
 
 export function PipelineDock({ onComplete }: { onComplete?: () => void }) {
   const { pipelineJobs, removePipelineJob, clearPipeline } = useDashboardStore();
-  const [statuses, setStatuses] = useState<Record<string, PipelineApiResponse>>({});
+  const [expanded, setExpanded] = useState(false);
+  const [live, setLive] = useState<Record<string, SopLive>>({});
   const completedRef = useRef(new Set<string>());
+  const refreshedRef = useRef(false);
 
   useEffect(() => {
     const identifiers = [...new Set(pipelineJobs.map((j) => j.identifier))];
-    if (!identifiers.length) return;
+    if (!identifiers.length) {
+      setLive({});
+      return;
+    }
 
     let active = true;
 
     const poll = async () => {
-      for (const identifier of identifiers) {
-        try {
-          const res = await fetch(`/api/sop/pipeline-status?identifier=${encodeURIComponent(identifier)}`);
-          if (!res.ok) continue;
-          const data = (await res.json()) as PipelineApiResponse;
-          if (!active) return;
-          setStatuses((s) => ({ ...s, [identifier]: data }));
-
-          if (
-            (data.status === "done" || data.stage === "approved") &&
-            !completedRef.current.has(identifier)
-          ) {
-            completedRef.current.add(identifier);
-            removePipelineJob(identifier);
+      let complianceById = new Map<string, string>();
+      try {
+        const cRes = await fetch("/api/compliance/active");
+        if (cRes.ok) {
+          const cData = await cRes.json();
+          for (const run of cData.runs ?? []) {
+            if (run.identifier) {
+              complianceById.set(String(run.identifier).toUpperCase(), run.name ?? "");
+            }
           }
-          if (data.status === "failed") {
-            removePipelineJob(identifier);
+        }
+      } catch {
+        /* ignore */
+      }
+
+      const next: Record<string, SopLive> = {};
+
+      for (const identifier of identifiers) {
+        let mcq: McqLive | null = null;
+        try {
+          const res = await fetch(
+            `/api/sop/generate-mcqs/status?identifier=${encodeURIComponent(identifier)}`,
+          );
+          if (res.ok) {
+            const data = await res.json();
+            mcq = {
+              status: data.status,
+              phase: data.phase,
+              percent: data.percent,
+              error: data.error,
+            };
           }
         } catch {
-          /* ignore poll errors */
+          /* ignore */
+        }
+
+        const complianceActive = complianceById.has(identifier.toUpperCase());
+        next[identifier] = {
+          mcq,
+          complianceActive,
+          complianceName: complianceById.get(identifier.toUpperCase()),
+        };
+
+        const mcqStatus = mcq?.status;
+        const mcqTerminal =
+          mcqStatus === "completed" ||
+          mcqStatus === "failed" ||
+          mcqStatus === "cancelled";
+        const allDone = mcqTerminal && !complianceActive;
+
+        if (allDone && !completedRef.current.has(identifier)) {
+          completedRef.current.add(identifier);
+          const delay = mcqStatus === "completed" ? 12_000 : 4_000;
+          setTimeout(() => removePipelineJob(identifier), delay);
         }
       }
+
+      if (!active) return;
+      setLive(next);
     };
 
-    poll();
-    const interval = setInterval(poll, 3000);
+    void poll();
+    const interval = setInterval(() => void poll(), 3000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -68,75 +106,181 @@ export function PipelineDock({ onComplete }: { onComplete?: () => void }) {
   }, [pipelineJobs, removePipelineJob]);
 
   useEffect(() => {
-    if (pipelineJobs.length === 0 && completedRef.current.size > 0) {
+    if (pipelineJobs.length === 0 && completedRef.current.size > 0 && !refreshedRef.current) {
+      refreshedRef.current = true;
       bustDashboardCache();
       onComplete?.();
       const timer = setTimeout(() => {
         clearPipeline();
         completedRef.current.clear();
-      }, 15000);
+        refreshedRef.current = false;
+        setExpanded(false);
+      }, 2000);
       return () => clearTimeout(timer);
     }
   }, [pipelineJobs.length, onComplete, clearPipeline]);
 
   if (pipelineJobs.length === 0) return null;
 
-  return (
-    <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border border-slate-200 bg-white shadow-2xl">
-      <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-        <h4 className="text-xs font-bold text-slate-700">Pipeline Progress</h4>
-        <button
-          type="button"
-          onClick={clearPipeline}
-          className="text-[10px] text-slate-400 hover:text-slate-600"
-        >
-          Dismiss
-        </button>
-      </div>
-      <div className="max-h-64 space-y-2 overflow-y-auto p-3">
-        {pipelineJobs.map((job) => {
-          const live = statuses[job.identifier];
-          const stage = live?.stage ?? job.stage;
-          const progress = live?.progress ?? job.progress;
-          const status = live?.status ?? job.status;
+  const runningCount = pipelineJobs.filter((j) => {
+    const s = live[j.identifier];
+    if (!s) return true;
+    const mcqRunning =
+      s.mcq &&
+      (s.mcq.status === "queued" || s.mcq.status === "running" || !s.mcq.status);
+    return Boolean(mcqRunning || s.complianceActive || !s.mcq);
+  }).length;
 
-          return (
-            <div key={job.id} className="rounded border border-slate-100 p-2">
-              <div className="flex items-center justify-between text-[10px]">
-                <span className="font-semibold">{displaySopCode(job.identifier)}</span>
-                <span className="text-slate-400">{job.language}</span>
-                {status === "running" && <Loader2 className="h-3 w-3 animate-spin text-sky-500" />}
-                {status === "done" && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
-                {status === "failed" && <XCircle className="h-3 w-3 text-red-500" />}
-              </div>
-              <p className="text-[9px] text-slate-500">{live?.label ?? stage}</p>
-              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-200">
-                <div
-                  className="h-full bg-sky-500 transition-all"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-              <div className="mt-1 flex gap-0.5">
-                {STAGE_KEYS.map((key) => (
-                  <div
-                    key={key}
-                    className={`h-1 flex-1 rounded ${
-                      live?.stages?.find((s) => s.key === key)?.complete
-                        ? "bg-sky-500"
-                        : "bg-slate-200"
-                    }`}
-                  />
-                ))}
-              </div>
-              {live?.estimatedSecondsRemaining ? (
-                <p className="mt-0.5 text-[9px] text-slate-400">
-                  ~{live.estimatedSecondsRemaining}s remaining
-                </p>
-              ) : null}
+  const titleCount = runningCount || pipelineJobs.length;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+      {expanded && (
+        <div className="w-80 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
+            <div>
+              <h4 className="text-xs font-bold text-slate-800">Codex work in progress</h4>
+              <p className="text-[10px] text-slate-500">
+                MCQ generation + compliance for {pipelineJobs.length} SOP
+                {pipelineJobs.length === 1 ? "" : "s"}
+              </p>
             </div>
-          );
-        })}
-      </div>
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+              title="Collapse"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="max-h-72 space-y-2 overflow-y-auto p-3">
+            {pipelineJobs.map((job) => {
+              const s = live[job.identifier];
+              const mcqStatus = s?.mcq?.status;
+              const mcqRunning =
+                !mcqStatus || mcqStatus === "queued" || mcqStatus === "running";
+              const mcqDone = mcqStatus === "completed";
+              const mcqFailed = mcqStatus === "failed" || mcqStatus === "cancelled";
+              const complianceActive = Boolean(s?.complianceActive);
+              const percent = s?.mcq?.percent ?? job.progress;
+
+              return (
+                <div key={job.id} className="rounded-lg border border-slate-100 bg-slate-50/80 p-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-[11px] font-semibold text-slate-800">
+                      {displaySopCode(job.identifier)}
+                    </span>
+                    {(mcqRunning || complianceActive) && (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-sky-500" />
+                    )}
+                    {mcqDone && !complianceActive && (
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                    )}
+                    {mcqFailed && !complianceActive && (
+                      <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
+                    )}
+                  </div>
+
+                  <div className="mt-1.5 space-y-1 text-[10px] text-slate-600">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>
+                        MCQ:{" "}
+                        <span className="font-medium text-slate-800">
+                          {mcqFailed
+                            ? s?.mcq?.error || mcqStatus
+                            : s?.mcq?.phase ||
+                              (mcqDone ? "Complete" : mcqRunning ? "Running…" : "Starting…")}
+                        </span>
+                      </span>
+                      {mcqRunning && (
+                        <span className="tabular-nums text-slate-400">{Math.round(percent)}%</span>
+                      )}
+                    </div>
+                    {mcqRunning && (
+                      <div className="h-1 overflow-hidden rounded-full bg-slate-200">
+                        <div
+                          className="h-full bg-sky-500 transition-all"
+                          style={{ width: `${Math.min(100, Math.max(4, percent))}%` }}
+                        />
+                      </div>
+                    )}
+                    <div>
+                      Compliance:{" "}
+                      <span className="font-medium text-slate-800">
+                        {complianceActive
+                          ? "Running (all guidelines)…"
+                          : mcqDone
+                            ? "Idle / finished"
+                            : "Queued after MCQ start"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center justify-between border-t border-slate-100 px-3 py-2">
+            <button
+              type="button"
+              onClick={() => {
+                clearPipeline();
+                setExpanded(false);
+              }}
+              className="text-[10px] font-medium text-slate-400 hover:text-slate-600"
+            >
+              Dismiss
+            </button>
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="text-[10px] font-medium text-sky-600 hover:text-sky-800"
+            >
+              Hide details
+            </button>
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-2 rounded-full border border-sky-200 bg-white px-3.5 py-2 text-xs font-semibold text-sky-800 shadow-lg shadow-sky-100/80 transition hover:border-sky-300 hover:bg-sky-50"
+        title={expanded ? "Hide details" : "Show details"}
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-600" />
+        <span>
+          Work in progress
+          {titleCount > 0 ? ` · ${titleCount}` : ""}
+        </span>
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 text-sky-500" />
+        ) : (
+          <ChevronUp className="h-3.5 w-3.5 text-sky-500" />
+        )}
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation();
+            clearPipeline();
+            setExpanded(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.stopPropagation();
+              clearPipeline();
+              setExpanded(false);
+            }
+          }}
+          className="ml-0.5 rounded-full p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+          title="Dismiss"
+        >
+          <X className="h-3 w-3" />
+        </span>
+      </button>
     </div>
   );
 }

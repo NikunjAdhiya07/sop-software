@@ -5,7 +5,6 @@ import { connectDB } from '@/lib/mongodb';
 import {
   getOrBuildLmsCache,
   invalidateLmsServerKeys,
-  lmsCacheControl,
   lmsServerKeys,
   lmsServerTtl,
 } from '@/lib/lmsCache';
@@ -32,7 +31,9 @@ export async function GET() {
         return { settings };
       },
     );
-    return NextResponse.json(body, { headers: lmsCacheControl(120) });
+    return NextResponse.json(body, {
+      headers: { 'Cache-Control': 'private, no-store, max-age=0' },
+    });
   } catch (err: unknown) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
@@ -64,7 +65,10 @@ export async function PATCH(req: NextRequest) {
       { upsert: true, new: true, setDefaultsOnInsert: true },
     ).lean();
 
-    invalidateLmsServerKeys(lmsServerKeys.adminExamSettings());
+    invalidateLmsServerKeys(
+      lmsServerKeys.adminExamSettings(),
+      lmsServerKeys.adminSopExamSettings(),
+    );
     return NextResponse.json({ settings });
   } catch (err: unknown) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });

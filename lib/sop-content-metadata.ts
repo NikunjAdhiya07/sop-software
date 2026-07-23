@@ -3,6 +3,7 @@ import {
   extractIdentifierFromFilename,
   extractSopCodeFromSegment,
   parseUploadPathMetadata,
+  pickBestSopIdentifierFromText,
   sopVersionFields,
   versionFromIdentifier,
 } from "@/lib/sop-utils";
@@ -21,6 +22,8 @@ export type SopContentMetadata = {
   parentIdentifier?: string;
   supersedes?: string;
   title?: string;
+  /** Exact DEPARTMENT value from the SOP page header, when present. */
+  department?: string;
 };
 
 const ANNEXURE_NAME = /annex(ure)?|appendix/i;
@@ -50,6 +53,32 @@ function extractSopNoFromContent(content: string): string | undefined {
   const match = content.match(SOP_NO_PATTERN);
   if (!match?.[1]) return undefined;
   return normalizeSopIdentifierKey(match[1]);
+}
+
+const DEPARTMENT_HEADER_STOP =
+  /\b(?:EFF\.?\s*DATE|REVIEW\s*DT\.?|SUPERSEDES|PAGE\s*NO\.?|SOP\s*NO\.?|DOCUMENT\s*NO\.?|SUBJECT|PREPARED\s*BY|APPROVED\s*BY|વિષય|લાગુ?\s*પડેલ?|ફેર\s*ચકાસણી)\b/i;
+
+/**
+ * Read the DEPARTMENT field from the SOP page header (first ~4k of extracted text).
+ * Returns the exact header value (trimmed), e.g. "abcd" or "Quality Assurance".
+ */
+export function extractDepartmentFromContent(content: string): string | undefined {
+  if (!content || content.startsWith("[")) return undefined;
+  const header = content.slice(0, 4000);
+  const match = header.match(/\bDEPARTMENT\b\s*:?\s*/i);
+  if (!match || match.index == null) return undefined;
+
+  let raw = header.slice(match.index + match[0].length, match.index + match[0].length + 120);
+  const stop = raw.search(DEPARTMENT_HEADER_STOP);
+  if (stop >= 0) raw = raw.slice(0, stop);
+  // Table extracts often append the next cell with | or multiple spaces
+  raw = raw.split("|")[0]?.split(/\t/)[0] ?? raw;
+  raw = raw.replace(/\s+/g, " ").trim();
+  raw = raw.replace(/^[:.\-–—]+/, "").replace(/[:.\-–—]+$/, "").trim();
+
+  if (!raw || raw.length < 2 || raw.length > 80) return undefined;
+  if (/^(nil|n\/?a|none|-|—|--|\.)$/i.test(raw)) return undefined;
+  return raw;
 }
 
 function extractSupersedesFromContent(content: string): string | undefined {
@@ -100,17 +129,14 @@ function parentIdentifierFromAnnexure(
   const base = fileName.replace(/\.[^.]+$/, "");
   const prefixCode = base.match(/^([A-Z]{2,}[A-Z0-9]*-\d+)\s*[-–_]/i);
   if (prefixCode?.[1]) {
-    return normalizeSopIdentifierKey(prefixCode[1]);
+    const best = pickBestSopIdentifierFromText(prefixCode[1]);
+    if (best) return normalizeSopIdentifierKey(best);
   }
 
   const annexPos = base.search(/annex(?:ure)?|appendix/i);
   const searchIn = annexPos > 0 ? base.slice(0, annexPos) : base;
-  const matches = [
-    ...searchIn.matchAll(/([A-Z]{2,}[A-Z0-9]*-\d+|[A-Z]{2,}-[A-Z]{2,}-\d+)/gi),
-  ];
-  if (matches.length) {
-    return normalizeSopIdentifierKey(matches[matches.length - 1][1]);
-  }
+  const best = pickBestSopIdentifierFromText(searchIn);
+  if (best) return normalizeSopIdentifierKey(best);
   return undefined;
 }
 
@@ -125,13 +151,13 @@ export function extractSopContentMetadata(opts: {
 }): SopContentMetadata {
   const { content = "", fileName, relativePath } = opts;
   const pathMeta = parseUploadPathMetadata(relativePath);
-  const fromFile = normalizeSopIdentifierKey(
-    extractIdentifierFromFilename(pathMeta.fileName || fileName),
-  );
+  const rawFromFile = extractIdentifierFromFilename(pathMeta.fileName || fileName);
+  const fromFile = rawFromFile ? normalizeSopIdentifierKey(rawFromFile) : undefined;
   const fromContent = content ? extractSopNoFromContent(content) : undefined;
-  const fromPath = pathMeta.identifierFromPath
-    ? normalizeSopIdentifierKey(pathMeta.identifierFromPath)
+  const fromPathRaw = pathMeta.identifierFromPath
+    ? pickBestSopIdentifierFromText(pathMeta.identifierFromPath)
     : undefined;
+  const fromPath = fromPathRaw ? normalizeSopIdentifierKey(fromPathRaw) : undefined;
 
   if (isAnnexureFileName(fileName)) {
     const parentIdentifier = parentIdentifierFromAnnexure(fileName, relativePath, content);
@@ -148,6 +174,17 @@ export function extractSopContentMetadata(opts: {
   }
 
   const identifier = fromContent || fromPath || fromFile;
+  const department = content ? extractDepartmentFromContent(content) : undefined;
+  if (!identifier) {
+    const subjectMatchEmpty = content.match(
+      /(?:SUBJECT|વિષય)\s*:?\s*(.+?)\s*(?:EFF\.?\s*DATE|REVIEW\s*DT\.?|SUPERSEDES|PAGE\s*NO\.?|SOP\s*NO\.?|$)/i,
+    );
+    return {
+      documentKind: "main",
+      title: subjectMatchEmpty?.[1]?.replace(/\s+/g, " ").trim(),
+      department,
+    };
+  }
   const version =
     pathMeta.versionFromPath ||
     versionFromIdentifier(identifier) ||
@@ -171,5 +208,6 @@ export function extractSopContentMetadata(opts: {
     version: resolvedVersion,
     supersedes: content ? extractSupersedesFromContent(content) : undefined,
     title: title && title.length >= 3 ? title : pathMeta.titleFromPath ?? undefined,
+    department,
   };
 }

@@ -46,7 +46,6 @@ interface TrainingRecord {
   isActive: boolean;
   totalSops: number;
   completedSops: number;
-  partialSops: number;
   notCompletedSops: number;
   overallPct: number;
   monthlyBreakdown: MonthBreakdown[];
@@ -55,7 +54,6 @@ interface TrainingRecord {
 
 const EMPTY_MONTHLY_BREAKDOWN: MonthBreakdown[] = Array.from({ length: 12 }, () => ({
   completed: 0,
-  partial: 0,
   notCompleted: 0,
 }));
 
@@ -543,7 +541,6 @@ export default function EmployeesPage() {
             isActive:         emp.isActive,
             totalSops:        t.totalSops,
             completedSops:    t.completedSops,
-            partialSops:      t.partialSops,
             notCompletedSops: t.notCompletedSops,
             overallPct:       t.overallPct,
             monthlyBreakdown: buildMonthlyBreakdown(t.sops),
@@ -559,7 +556,6 @@ export default function EmployeesPage() {
           isActive:         emp.isActive,
           totalSops:        0,
           completedSops:    0,
-          partialSops:      0,
           notCompletedSops: 0,
           overallPct:       0,
           monthlyBreakdown: EMPTY_MONTHLY_BREAKDOWN,
@@ -800,11 +796,11 @@ export default function EmployeesPage() {
               const emp = findEmployee(row.employeeId);
               if (!emp) return null;
               return (
-                <div className="flex items-center gap-0.5">
+                <>
                   <button
                     suppressHydrationWarning
                     onClick={() => setEditing(emp)}
-                    className="rounded p-1 text-gray-400 hover:bg-purple-50 hover:text-purple-600"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-purple-50 hover:text-purple-600"
                     title="Edit"
                   >
                     <Pencil className="h-3.5 w-3.5" />
@@ -813,7 +809,7 @@ export default function EmployeesPage() {
                     suppressHydrationWarning
                     onClick={() => toggleActive(emp)}
                     disabled={togglingId === emp._id}
-                    className={`rounded p-1 text-gray-400 ${emp.isActive ? 'hover:bg-red-50 hover:text-red-600' : 'hover:bg-green-50 hover:text-green-600'}`}
+                    className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 ${emp.isActive ? 'hover:bg-red-50 hover:text-red-600' : 'hover:bg-green-50 hover:text-green-600'}`}
                     title={emp.isActive ? 'Mark as Left' : 'Reactivate'}
                   >
                     {togglingId === emp._id
@@ -823,12 +819,12 @@ export default function EmployeesPage() {
                   <button
                     suppressHydrationWarning
                     onClick={() => setDeleting(emp)}
-                    className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600"
                     title="Remove"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
-                </div>
+                </>
               );
             }}
           />

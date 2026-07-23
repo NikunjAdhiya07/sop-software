@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { connectDB } from "@/lib/mongodb";
 import SOP from "@/models/SOP";
+import Department from "@/models/Department";
 import {
   resolveSopDatesFromContent,
   sopDatesToDbFields,
@@ -86,14 +87,23 @@ export async function checkImportDuplicate(opts: {
     isObsolete: { $ne: true },
   }).lean();
 
-  if (bySlot?.checksum === opts.checksum) {
-    return { duplicate: true, reason: "checksum_unchanged" };
+  if (bySlot) {
+    // Already in the registry for this SOP/version/language/type — not a new import.
+    // (Checksum may differ after re-export; still not "new".)
+    return {
+      duplicate: true,
+      reason:
+        !bySlot.checksum || bySlot.checksum === opts.checksum
+          ? "checksum_unchanged"
+          : "duplicate",
+    };
   }
 
   return { duplicate: false };
 }
 
 export async function processSopFileInput(input: SopFileInput): Promise<SopFileResult> {
+  await connectDB();
   const {
     buffer,
     fileName,
@@ -139,11 +149,29 @@ export async function processSopFileInput(input: SopFileInput): Promise<SopFileR
     version,
     pathMeta.versionFromPath,
   );
+  const knownDepartments = (await Department.distinct("name")) as string[];
   const department = resolveDepartmentFromUpload({
     batchOverride: batchDepartment,
+    contentDepartment: contentMeta.department,
     relativePath,
     identifier,
+    knownDepartments,
   });
+  const deptManualOverride = Boolean(batchDepartment?.trim());
+
+  // Persist custom / document departments so capsules and dropdowns include them.
+  if (department && department !== "General") {
+    const alreadyKnown = knownDepartments.some(
+      (d) => d.trim().toLowerCase() === department.toLowerCase(),
+    );
+    if (!alreadyKnown) {
+      await Department.updateOne(
+        { name: department },
+        { $setOnInsert: { name: department } },
+        { upsert: true },
+      );
+    }
+  }
 
   const lang = languageFromContentScript(
     content,
@@ -244,6 +272,7 @@ export async function processSopFileInput(input: SopFileInput): Promise<SopFileR
     name,
     identifier,
     department,
+    ...(deptManualOverride ? { deptManualOverride: true } : {}),
     language: lang,
     fileUrl,
     fileType,

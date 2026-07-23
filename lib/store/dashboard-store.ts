@@ -102,12 +102,17 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   setAdminOpen: (open) => set({ adminOpen: open }),
 
   addPipelineJob: (job) =>
-    set((s) => ({
-      pipelineJobs: [
-        ...s.pipelineJobs,
-        { ...job, id: crypto.randomUUID(), startedAt: Date.now() },
-      ],
-    })),
+    set((s) => {
+      if (s.pipelineJobs.some((j) => j.identifier === job.identifier && j.status === "running")) {
+        return s;
+      }
+      return {
+        pipelineJobs: [
+          ...s.pipelineJobs,
+          { ...job, id: crypto.randomUUID(), startedAt: Date.now() },
+        ],
+      };
+    }),
 
   updatePipelineJob: (id, patch) =>
     set((s) => ({

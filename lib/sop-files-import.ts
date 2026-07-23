@@ -17,14 +17,20 @@ import { reconcileSopVersions } from "@/lib/reconcile-sop-versions";
 import { refreshFamilyPriorHeaderDateFlags } from "@/lib/prior-header-dates";
 import { invalidateDashboardSopsCache } from "@/lib/server-cache";
 import { sopIdentifierMatchFilter, normalizeSopIdentifierKey, parseRevisionFromSopIdentifier } from "@/lib/sopIdentifierNormalize";
-import { extractIdentifierFromFilename, sopFamilyIdentifierRegex } from "@/lib/sop-utils";
+import { extractIdentifierFromFilename, pickBestSopIdentifierFromText, sopFamilyIdentifierRegex, sopVersionFields } from "@/lib/sop-utils";
 import { detectFileType } from "@/lib/upload";
 import { extractTextFromBuffer } from "@/lib/extractContent";
+import { resolveUploadLanguage } from "@/lib/sop-filename";
 
 const SKIP_DIRS = new Set(["_archive", "_failed", "_obsolete", "_prior-versions"]);
+const SCAN_CACHE_FILE = ".import-scan-cache.json";
+const HASH_CONCURRENCY = 12;
 
 export const IMPORT_SCOPES = ["main", "annexure", "prior"] as const;
 export type ImportScope = (typeof IMPORT_SCOPES)[number];
+
+type ScanCacheEntry = { size: number; mtimeMs: number; checksum: string };
+type ScanCache = Record<string, ScanCacheEntry>;
 
 export function parseImportScopes(input: unknown): ImportScope[] | null {
   if (input === undefined || input === null || input === "") {
@@ -65,10 +71,283 @@ export type ScannedFile = {
   absolutePath: string;
   relativePath: string;
   fileName: string;
+  size?: number;
+  mtimeMs?: number;
 };
 
 function isPriorVersionPath(relativePath: string): boolean {
   return relativePath.replace(/\\/g, "/").startsWith("versions/");
+}
+
+function scanCachePath(rootDir: string): string {
+  return path.join(rootDir, SCAN_CACHE_FILE);
+}
+
+async function loadScanCache(rootDir: string): Promise<ScanCache> {
+  try {
+    const raw = await fs.readFile(scanCachePath(rootDir), "utf8");
+    const parsed = JSON.parse(raw) as ScanCache;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveScanCache(rootDir: string, cache: ScanCache): Promise<void> {
+  try {
+    await fs.writeFile(scanCachePath(rootDir), JSON.stringify(cache), "utf8");
+  } catch (err) {
+    console.warn("[files-import] could not save scan cache:", err);
+  }
+}
+
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function hashFile(absolutePath: string): Promise<string> {
+  const buffer = await fs.readFile(absolutePath);
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+/** Resolve checksums using path+size+mtime cache; only read files that changed. */
+async function resolveFileChecksums(
+  files: ScannedFile[],
+  cache: ScanCache,
+): Promise<{ checksums: Map<string, string>; cacheDirty: boolean }> {
+  const checksums = new Map<string, string>();
+  let cacheDirty = false;
+  const misses: ScannedFile[] = [];
+
+  for (const file of files) {
+    const hit = cache[file.relativePath];
+    if (
+      hit &&
+      file.size != null &&
+      file.mtimeMs != null &&
+      hit.size === file.size &&
+      hit.mtimeMs === file.mtimeMs &&
+      hit.checksum
+    ) {
+      checksums.set(file.relativePath, hit.checksum);
+    } else {
+      misses.push(file);
+    }
+  }
+
+  if (misses.length) {
+    await mapPool(misses, HASH_CONCURRENCY, async (file) => {
+      const checksum = await hashFile(file.absolutePath);
+      checksums.set(file.relativePath, checksum);
+      if (file.size != null && file.mtimeMs != null) {
+        cache[file.relativePath] = {
+          size: file.size,
+          mtimeMs: file.mtimeMs,
+          checksum,
+        };
+        cacheDirty = true;
+      }
+      return checksum;
+    });
+  }
+
+  return { checksums, cacheDirty };
+}
+
+function pruneScanCache(cache: ScanCache, livePaths: Set<string>): boolean {
+  let dirty = false;
+  for (const key of Object.keys(cache)) {
+    if (!livePaths.has(key)) {
+      delete cache[key];
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
+type KnownImportIndex = {
+  checksums: Set<string>;
+  /** sopBaseId|versionNum|language|fileType */
+  slots: Set<string>;
+  /** identifier|language|fileType (normalized identifier) */
+  idSlots: Set<string>;
+  /** identifier|fileType — language-agnostic fallback */
+  idTypeSlots: Set<string>;
+  /** lowercase original / annexure file names already stored */
+  fileNames: Set<string>;
+};
+
+function slotKey(
+  sopBaseId: string,
+  versionNum: number,
+  language: string,
+  fileType: string,
+): string {
+  return `${sopBaseId}|${versionNum}|${language}|${fileType}`.toLowerCase();
+}
+
+function idSlotKey(identifier: string, language: string, fileType: string): string {
+  return `${normalizeSopIdentifierKey(identifier)}|${language}|${fileType}`.toLowerCase();
+}
+
+function idTypeKey(identifier: string, fileType: string): string {
+  return `${normalizeSopIdentifierKey(identifier)}|${fileType}`.toLowerCase();
+}
+
+function fileTypeFromName(name?: string | null): string | undefined {
+  if (!name) return undefined;
+  return detectFileType(name) || undefined;
+}
+
+function rememberSopSlot(
+  known: KnownImportIndex,
+  opts: {
+    identifier?: string | null;
+    sopBaseId?: string | null;
+    versionNum?: number | null;
+    language?: string | null;
+    fileType?: string | null;
+    checksum?: string | null;
+    originalFileName?: string | null;
+  },
+) {
+  if (opts.checksum) known.checksums.add(opts.checksum);
+  if (opts.originalFileName) known.fileNames.add(opts.originalFileName.toLowerCase());
+
+  const language = opts.language || "English";
+  const fileType = opts.fileType || fileTypeFromName(opts.originalFileName);
+  if (!fileType || !opts.identifier) return;
+
+  const normalized = normalizeSopIdentifierKey(opts.identifier);
+  known.idSlots.add(idSlotKey(normalized, language, fileType));
+  known.idTypeSlots.add(idTypeKey(normalized, fileType));
+
+  const fields = sopVersionFields(normalized);
+  if (fields.sopBaseId && fields.versionNum != null) {
+    known.slots.add(slotKey(fields.sopBaseId, fields.versionNum, language, fileType));
+  }
+  if (opts.sopBaseId != null && opts.versionNum != null) {
+    known.slots.add(slotKey(String(opts.sopBaseId), opts.versionNum, language, fileType));
+  }
+}
+
+async function loadKnownImportIndex(): Promise<KnownImportIndex> {
+  const [manifestChecksums, rows] = await Promise.all([
+    SopFilesImportManifest.distinct("checksum"),
+    // Include obsolete — older files under versions/ are not "new"
+    SOP.find(
+      {},
+      {
+        identifier: 1,
+        sopBaseId: 1,
+        versionNum: 1,
+        language: 1,
+        fileType: 1,
+        checksum: 1,
+        originalFileName: 1,
+        "sopDocuments.checksum": 1,
+        "sopDocuments.fileName": 1,
+      },
+    ).lean(),
+  ]);
+
+  const known: KnownImportIndex = {
+    checksums: new Set(),
+    slots: new Set(),
+    idSlots: new Set(),
+    idTypeSlots: new Set(),
+    fileNames: new Set(),
+  };
+
+  for (const c of manifestChecksums) {
+    if (typeof c === "string" && c) known.checksums.add(c);
+  }
+
+  for (const row of rows) {
+    rememberSopSlot(known, row);
+    for (const d of row.sopDocuments ?? []) {
+      if (d?.checksum) known.checksums.add(d.checksum);
+      if (d?.fileName) known.fileNames.add(d.fileName.toLowerCase());
+    }
+  }
+
+  return known;
+}
+
+/** Prefer a real SOP code in long Bunny-style names (never facility labels like WADHWAN-2). */
+function identifierFromImportFileName(fileName: string, relativePath: string): string | undefined {
+  const meta = extractSopContentMetadata({ fileName, relativePath });
+  if (meta.identifier && /-\d+$/.test(meta.identifier)) {
+    // extractSopContentMetadata may still normalize facility labels — re-validate
+    const fromMeta = pickBestSopIdentifierFromText(meta.identifier);
+    if (fromMeta) return normalizeSopIdentifierKey(fromMeta);
+  }
+
+  const fromPath = pickBestSopIdentifierFromText(`${relativePath} ${fileName}`);
+  if (fromPath) return normalizeSopIdentifierKey(fromPath);
+
+  const fromName = extractIdentifierFromFilename(fileName);
+  if (fromName && /-\d+$/.test(fromName)) return normalizeSopIdentifierKey(fromName);
+  return undefined;
+}
+
+/** True when this files/ entry is already represented in the registry (not a new import). */
+function isFileAlreadyKnown(
+  file: ScannedFile,
+  checksum: string | undefined,
+  known: KnownImportIndex,
+): boolean {
+  if (checksum && known.checksums.has(checksum)) return true;
+
+  const lowerName = file.fileName.toLowerCase();
+  if (known.fileNames.has(lowerName)) return true;
+
+  const fileType = detectFileType(file.fileName);
+  if (!fileType) return false;
+
+  if (isAnnexureFileName(file.fileName)) {
+    return false;
+  }
+
+  const language = resolveUploadLanguage(file.relativePath, "English");
+  const identifier = identifierFromImportFileName(file.fileName, file.relativePath);
+  if (identifier) {
+    if (known.idSlots.has(idSlotKey(identifier, language, fileType))) return true;
+    // Same SOP code + file type already in DB (language label may drift after re-export)
+    if (known.idTypeSlots.has(idTypeKey(identifier, fileType))) return true;
+
+    const fields = sopVersionFields(identifier);
+    if (
+      fields.sopBaseId &&
+      fields.versionNum != null &&
+      known.slots.has(slotKey(fields.sopBaseId, fields.versionNum, language, fileType))
+    ) {
+      return true;
+    }
+  }
+
+  // Long Bunny/export names often embed the shorter originalFileName as a suffix
+  if (lowerName.length > 40) {
+    for (const knownName of known.fileNames) {
+      if (knownName.length >= 12 && lowerName.endsWith(knownName)) return true;
+    }
+  }
+
+  return false;
 }
 
 export async function scanFilesFolder(
@@ -79,31 +358,38 @@ export async function scanFilesFolder(
   const results: ScannedFile[] = [];
 
   async function walk(dir: string, prefix = "", inVersions = false) {
-    let entries: string[];
+    let entries: import("fs").Dirent[];
     try {
-      entries = await fs.readdir(dir);
+      entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
-    for (const name of entries) {
+    for (const entry of entries) {
+      const name = entry.name;
       if (shouldSkipImportFileName(name)) continue;
+      if (name === SCAN_CACHE_FILE) continue;
       const abs = path.join(dir, name);
       const rel = prefix ? `${prefix}/${name}` : name;
-      const stat = await fs.stat(abs);
-      if (stat.isDirectory()) {
+      if (entry.isDirectory()) {
         if (SKIP_DIRS.has(name)) continue;
         const childInVersions = inVersions || (!prefix && name === "versions");
         if (childInVersions && !wantPrior && !inVersions) continue;
         await walk(abs, rel, childInVersions);
-      } else if (stat.isFile() && detectFileType(name)) {
+      } else if (entry.isFile() && detectFileType(name)) {
         const file: ScannedFile = {
           absolutePath: abs,
           relativePath: rel.replace(/\\/g, "/"),
           fileName: name,
         };
-        if (fileMatchesImportScope(file, scopes)) {
-          results.push(file);
+        if (!fileMatchesImportScope(file, scopes)) continue;
+        try {
+          const stat = await fs.stat(abs);
+          file.size = stat.size;
+          file.mtimeMs = Math.trunc(stat.mtimeMs);
+        } catch {
+          /* hash path will still work without fingerprint */
         }
+        results.push(file);
       }
     }
   }
@@ -115,11 +401,6 @@ export async function scanFilesFolder(
   }
 
   return results;
-}
-
-async function isManifestDuplicate(checksum: string): Promise<boolean> {
-  const hit = await SopFilesImportManifest.findOne({ checksum }).lean();
-  return Boolean(hit);
 }
 
 async function isFamilyObsolete(identifier: string): Promise<boolean> {
@@ -211,6 +492,119 @@ export async function archiveImportedFile(
   return dest;
 }
 
+/**
+ * After a permanent registry delete: drop import-manifest rows and move archived
+ * source files back into the files/ import root so Scan can find them again.
+ */
+export async function clearImportStateAfterPermanentDelete(opts: {
+  identifiers: string[];
+  checksums: string[];
+}): Promise<{ manifestsRemoved: number; restored: string[] }> {
+  await connectDB();
+  const rootDir = getFilesImportDir();
+  const identifiers = [...new Set(opts.identifiers.map((id) => id.trim()).filter(Boolean))];
+  const checksums = [...new Set(opts.checksums.map((c) => c.trim()).filter(Boolean))];
+  const idKeys = identifiers.map((id) => normalizeSopIdentifierKey(id));
+
+  const orFilters: Record<string, unknown>[] = [];
+  if (checksums.length) orFilters.push({ checksum: { $in: checksums } });
+  if (idKeys.length) {
+    orFilters.push({ identifier: { $in: idKeys } });
+    // Family match: TEST01-0 / TEST01-01 share base TEST01
+    for (const id of idKeys) {
+      const base = id.replace(/-\d+$/, "");
+      if (base && base !== id) {
+        orFilters.push({ identifier: new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(-\\d+)?$`, "i") });
+      }
+    }
+  }
+
+  const manifests = orFilters.length
+    ? await SopFilesImportManifest.find({ $or: orFilters }).lean()
+    : [];
+
+  const restored: string[] = [];
+  const archiveRoot = path.join(rootDir, "_archive");
+
+  for (const m of manifests) {
+    const candidates: string[] = [];
+    if (m.archivedPath) candidates.push(m.archivedPath);
+    if (m.relativePath) {
+      candidates.push(path.join(archiveRoot, m.relativePath));
+      candidates.push(path.join(archiveRoot, path.basename(m.relativePath)));
+    }
+
+    const destRelative = m.relativePath || (m.archivedPath ? path.basename(m.archivedPath) : "");
+    if (!destRelative) continue;
+    const dest = path.join(rootDir, destRelative);
+
+    for (const src of candidates) {
+      try {
+        await fs.access(src);
+        // Don't overwrite an existing live file
+        try {
+          await fs.access(dest);
+          break;
+        } catch {
+          /* dest free */
+        }
+        await moveFile(src, dest);
+        restored.push(dest);
+        break;
+      } catch {
+        /* try next candidate */
+      }
+    }
+  }
+
+  // Fallback: archived files named like TEST01*.docx with no manifest row
+  if (identifiers.length) {
+    try {
+      const archiveEntries = await fs.readdir(archiveRoot, { withFileTypes: true });
+      for (const entry of archiveEntries) {
+        if (!entry.isFile()) continue;
+        const upper = entry.name.toUpperCase();
+        const hit = idKeys.some((id) => {
+          const base = id.replace(/-\d+$/, "");
+          return upper.includes(base.toUpperCase()) || upper.includes(id.toUpperCase());
+        });
+        if (!hit) continue;
+        const src = path.join(archiveRoot, entry.name);
+        const dest = path.join(rootDir, entry.name);
+        try {
+          await fs.access(dest);
+          continue;
+        } catch {
+          /* free */
+        }
+        try {
+          await moveFile(src, dest);
+          restored.push(dest);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* no archive dir */
+    }
+  }
+
+  let manifestsRemoved = 0;
+  if (orFilters.length) {
+    const del = await SopFilesImportManifest.deleteMany({ $or: orFilters });
+    manifestsRemoved = del.deletedCount ?? 0;
+  }
+
+  // Bust scan fingerprint cache so restored files are hashed as new
+  try {
+    await fs.unlink(path.join(rootDir, SCAN_CACHE_FILE));
+  } catch {
+    /* no cache */
+  }
+
+  return { manifestsRemoved, restored };
+}
+
 export async function routeToObsoleteFolder(
   rootDir: string,
   scanned: ScannedFile,
@@ -270,12 +664,6 @@ export type ImportPreview = {
   duplicate: number;
   obsolete: number;
 };
-
-async function isAlreadyImported(checksum: string): Promise<boolean> {
-  if (await isManifestDuplicate(checksum)) return true;
-  const existing = await SOP.findOne({ checksum }).lean();
-  return Boolean(existing);
-}
 
 function normalizeParentIdentifier(input?: string | null): string | undefined {
   const trimmed = input?.trim();
@@ -379,6 +767,19 @@ export async function previewFilesImport(
   await connectDB();
   const parentIdentifier = normalizeParentIdentifier(parentOverride);
   const scanned = sortScannedFiles(await scanFilesFolder(rootDir, scopes));
+
+  const cache = await loadScanCache(rootDir);
+  const [{ checksums, cacheDirty }, known] = await Promise.all([
+    resolveFileChecksums(scanned, cache),
+    loadKnownImportIndex(),
+  ]);
+  let dirty = cacheDirty;
+  if (scopes.length === IMPORT_SCOPES.length) {
+    dirty =
+      pruneScanCache(cache, new Set(scanned.map((f) => f.relativePath))) || dirty;
+  }
+  if (dirty) await saveScanCache(rootDir, cache);
+
   let main = 0;
   let annexure = 0;
   let prior = 0;
@@ -389,26 +790,72 @@ export async function previewFilesImport(
   let pendingPrior = 0;
   let unresolvedAnnexures = 0;
   const annexParentRefs = new Set<string>();
+  const pendingAnnexFiles: ScannedFile[] = [];
+  const pendingMainIds: string[] = [];
 
   let parentFound: boolean | undefined;
   const mainFilesForParent =
     scopes.includes("annexure") ? await scanFilesFolder(rootDir, ["main"]) : undefined;
 
   for (const file of scanned) {
-    const buffer = await fs.readFile(file.absolutePath);
-    const checksum = createHash("sha256").update(buffer).digest("hex");
     const isAnnex = isAnnexureFileName(file.fileName);
     const isPrior = isPriorVersionPath(file.relativePath);
-    const fileType = detectFileType(file.fileName);
+    if (isAnnex) annexure++;
+    else if (isPrior) prior++;
+    else main++;
+
+    const checksum = checksums.get(file.relativePath);
+    if (isFileAlreadyKnown(file, checksum, known)) {
+      duplicate++;
+      continue;
+    }
 
     if (isAnnex) {
-      annexure++;
-      const annexContent =
-        fileType === "docx" ? await extractTextFromBuffer(buffer, fileType) : "";
-      const refParent =
-        fileType === "docx"
-          ? await extractRefSopNoFromAnnexure({ content: annexContent, buffer })
-          : undefined;
+      pendingAnnexure++;
+      pendingAnnexFiles.push(file);
+      // Cheap path/filename parent first — only open DOCX if still unresolved
+      const cheapMeta = extractSopContentMetadata({
+        fileName: file.fileName,
+        relativePath: file.relativePath,
+      });
+      const cheapParent = resolveAnnexureParentIdentifier(
+        { parentIdentifier: cheapMeta.parentIdentifier },
+        parentIdentifier,
+      );
+      if (cheapParent) annexParentRefs.add(cheapParent);
+    } else if (isPrior) {
+      pendingPrior++;
+    } else {
+      pendingMain++;
+      const meta = extractSopContentMetadata({
+        fileName: file.fileName,
+        relativePath: file.relativePath,
+      });
+      if (meta.identifier) pendingMainIds.push(meta.identifier);
+    }
+  }
+
+  // Only open pending annexure DOCX files that still lack a parent code
+  await mapPool(pendingAnnexFiles, 6, async (file) => {
+    const cheapMeta = extractSopContentMetadata({
+      fileName: file.fileName,
+      relativePath: file.relativePath,
+    });
+    const cheapParent = resolveAnnexureParentIdentifier(
+      { parentIdentifier: cheapMeta.parentIdentifier },
+      parentIdentifier,
+    );
+    if (cheapParent) return;
+
+    const fileType = detectFileType(file.fileName);
+    if (fileType !== "docx") {
+      unresolvedAnnexures++;
+      return;
+    }
+    try {
+      const buffer = await fs.readFile(file.absolutePath);
+      const annexContent = await extractTextFromBuffer(buffer, fileType);
+      const refParent = await extractRefSopNoFromAnnexure({ content: annexContent, buffer });
       const meta = extractSopContentMetadata({
         content: annexContent,
         fileName: file.fileName,
@@ -420,24 +867,15 @@ export async function previewFilesImport(
       );
       if (!resolved) unresolvedAnnexures++;
       else annexParentRefs.add(resolved);
-    } else if (isPrior) prior++;
-    else main++;
-
-    if (await isAlreadyImported(checksum)) {
-      duplicate++;
-      continue;
+    } catch {
+      unresolvedAnnexures++;
     }
+  });
 
-    if (isAnnex) pendingAnnexure++;
-    else if (isPrior) pendingPrior++;
-    else pendingMain++;
-
-    if (!isAnnex && !isPrior) {
-      const meta = extractSopContentMetadata({ fileName: file.fileName, relativePath: file.relativePath });
-      if (meta.identifier && (await isFamilyObsolete(meta.identifier))) {
-        obsolete++;
-      }
-    }
+  if (pendingMainIds.length) {
+    const uniqueIds = [...new Set(pendingMainIds)];
+    const obsoleteFlags = await mapPool(uniqueIds, 8, (id) => isFamilyObsolete(id));
+    obsolete = obsoleteFlags.filter(Boolean).length;
   }
 
   const pending = pendingMain + pendingAnnexure + pendingPrior;
@@ -481,12 +919,49 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
   const parentOverride = job.parentIdentifier;
 
   job.status = "running";
-  job.phase = "Scanning files folder…";
+  job.phase = "Detecting new files…";
   job.percent = 0;
   await job.save();
 
   const scanned = sortScannedFiles(await scanFilesFolder(rootDir, scopes));
+  const cache = await loadScanCache(rootDir);
+  const [{ checksums, cacheDirty }, known] = await Promise.all([
+    resolveFileChecksums(scanned, cache),
+    loadKnownImportIndex(),
+  ]);
+  let dirty = cacheDirty;
+  if (scopes.length === IMPORT_SCOPES.length) {
+    dirty =
+      pruneScanCache(cache, new Set(scanned.map((f) => f.relativePath))) || dirty;
+  }
+  let cacheNeedsSave = dirty;
+  if (cacheNeedsSave) await saveScanCache(rootDir, cache);
+
+  const seenChecksums = new Set<string>();
+  const pendingFiles: Array<{ file: ScannedFile; checksum: string }> = [];
+  let skippedKnown = 0;
+
+  for (const file of scanned) {
+    const checksum = checksums.get(file.relativePath);
+    if (isFileAlreadyKnown(file, checksum, known)) {
+      skippedKnown++;
+      continue;
+    }
+    if (!checksum) continue;
+    if (seenChecksums.has(checksum)) {
+      skippedKnown++;
+      continue;
+    }
+    seenChecksums.add(checksum);
+    pendingFiles.push({ file, checksum });
+  }
+
   job.totals.scanned = scanned.length;
+  job.totals.skipped = skippedKnown;
+  job.phase =
+    pendingFiles.length === 0
+      ? "No new files to import"
+      : `Importing ${pendingFiles.length} new file(s)…`;
   await job.save();
 
   const mainFilesForParent = scopes.includes("annexure")
@@ -495,32 +970,41 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
   const ensuredParentRefs = new Set<string>();
 
   const touchedFamilies = new Set<string>();
-  const seenChecksums = new Set<string>();
   const familyMaxVersion = new Map<string, number>();
   const archivedByIdentifier = new Map<string, string[]>();
 
-  for (let i = 0; i < scanned.length; i++) {
-    const file = scanned[i];
-    job.phase = `Processing ${i + 1}/${scanned.length}: ${file.fileName}`;
-    job.percent = Math.round(((i + 1) / Math.max(scanned.length, 1)) * 100);
+  for (let i = 0; i < pendingFiles.length; i++) {
+    const { file, checksum } = pendingFiles[i];
+    job.phase = `Processing ${i + 1}/${pendingFiles.length}: ${file.fileName}`;
+    job.percent = Math.round(((i + 1) / Math.max(pendingFiles.length, 1)) * 100);
 
     try {
       const buffer = await fs.readFile(file.absolutePath);
-      const checksum = createHash("sha256").update(buffer).digest("hex");
+      // Re-hash to confirm cache (file may have changed between scan and import)
+      const liveChecksum = createHash("sha256").update(buffer).digest("hex");
+      if (liveChecksum !== checksum) {
+        cache[file.relativePath] = {
+          size: buffer.length,
+          mtimeMs: Date.now(),
+          checksum: liveChecksum,
+        };
+        cacheNeedsSave = true;
+      }
+      const finalChecksum = liveChecksum;
 
-      if (seenChecksums.has(checksum) || (await isManifestDuplicate(checksum))) {
+      if (known.checksums.has(finalChecksum) || isFileAlreadyKnown(file, finalChecksum, known)) {
         job.files.push({
           relativePath: file.relativePath,
           fileName: file.fileName,
           status: "duplicate",
-          checksum,
-          message: "Already processed",
+          checksum: finalChecksum,
+          message: "Already in database",
         });
         job.totals.skipped++;
         await job.save();
         continue;
       }
-      seenChecksums.add(checksum);
+      known.checksums.add(finalChecksum);
 
       if (isAnnexureFileName(file.fileName)) {
         try {
@@ -570,7 +1054,7 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
             parentIdentifier,
             annexureLabel: meta.annexureLabel,
             versionNum: parentHasRevision ? meta.versionNum : undefined,
-            checksum,
+            checksum: finalChecksum,
             skipIfChecksumMatches: true,
           });
 
@@ -581,7 +1065,7 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
               fileName: file.fileName,
               status: "duplicate",
               identifier: linkResult.parentIdentifier ?? parentIdentifier,
-              checksum,
+              checksum: finalChecksum,
               message: archiveWarning,
             });
             job.totals.skipped++;
@@ -590,7 +1074,7 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
             if (archivedPath) {
               await SopFilesImportManifest.create({
                 relativePath: file.relativePath,
-                checksum,
+                checksum: finalChecksum,
                 identifier: linkResult.parentIdentifier ?? parentIdentifier,
                 documentKind: "annexure",
                 jobId: job._id,
@@ -602,7 +1086,7 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
               fileName: file.fileName,
               status: "imported",
               identifier: linkResult.parentIdentifier ?? parentIdentifier,
-              checksum,
+              checksum: finalChecksum,
               message: warning ?? meta.annexureLabel,
             });
             job.totals.annexures++;
@@ -644,7 +1128,7 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
           fileName: file.fileName,
           status: "obsolete_routed",
           identifier: contentMeta.identifier,
-          checksum,
+          checksum: finalChecksum,
           message: dest,
         });
         job.totals.obsoleteRouted++;
@@ -752,6 +1236,8 @@ export async function runFilesFolderImport(jobId: string): Promise<void> {
       await job.save();
     }
   }
+
+  if (cacheNeedsSave) await saveScanCache(rootDir, cache);
 
   job.phase = "Reconciling versions…";
   await job.save();

@@ -27,6 +27,7 @@ import {
   type SopUploadResult,
   type UploadProgress,
 } from "./BulkUploadShell";
+import { PostUploadPipelineModal } from "./PostUploadPipelineModal";
 
 type UploadResult = SopUploadResult;
 
@@ -170,10 +171,12 @@ export function SopFolderUploadModal({
   open,
   onClose,
   onSuccess,
+  departmentList = [],
 }: {
   open: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  departmentList?: string[];
 }) {
   const { showToast } = useDashboardStore();
   const { files, addFiles, clearFiles, fileInputRef, folderInputRef, handleFileChange } =
@@ -183,7 +186,8 @@ export function SopFolderUploadModal({
   const [results, setResults] = useState<UploadResult[]>([]);
   const [department, setDepartment] = useState("");
   const [uploadLang, setUploadLang] = useState<"English" | "Gujarati">("English");
-  const [generateMcq, setGenerateMcq] = useState(false);
+  const [pipelineIds, setPipelineIds] = useState<string[]>([]);
+  const [pipelineOpen, setPipelineOpen] = useState(false);
 
   const reset = () => {
     clearFiles();
@@ -191,7 +195,6 @@ export function SopFolderUploadModal({
     setUploadProgress(null);
     setDepartment("");
     setUploadLang("English");
-    setGenerateMcq(false);
   };
 
   const handleClose = () => {
@@ -210,7 +213,7 @@ export function SopFolderUploadModal({
         files,
         uploadLang,
         department,
-        generateMcq,
+        false,
         (completed, total) => setUploadProgress({ completed, total }),
       );
       setResults(uploadResults);
@@ -219,7 +222,17 @@ export function SopFolderUploadModal({
         clearFiles();
         showToast(sopUploadToastMessage(summary));
         onSuccess();
-        if (summary.failed === 0) handleClose();
+        const ids = [
+          ...new Set(
+            uploadResults
+              .filter((r) => r.success && r.identifier)
+              .map((r) => r.identifier as string),
+          ),
+        ];
+        if (ids.length) {
+          setPipelineIds(ids);
+          setPipelineOpen(true);
+        }
       } else {
         showToast(sopUploadToastMessage(summary));
       }
@@ -336,24 +349,31 @@ export function SopFolderUploadModal({
         </label>
         <label className="flex-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
           Department override (optional)
-          <input
+          <select
             className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-700 focus:border-violet-400 focus:outline-none"
-            placeholder="e.g. QA, QC"
             value={department}
             onChange={(e) => setDepartment(e.target.value)}
-          />
+          >
+            <option value="">Auto-detect from folder / SOP code</option>
+            {departmentList.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
-      <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-700">
-        <input
-          type="checkbox"
-          checked={generateMcq}
-          onChange={(e) => setGenerateMcq(e.target.checked)}
-          className="h-3.5 w-3.5 accent-violet-600"
-        />
-        Auto-generate MCQs after upload
+      <label className="block text-[10px] leading-snug text-slate-500">
+        After upload, you will be asked to start Codex MCQ generation and full compliance — only if
+        Codex is logged in on this machine. Department is auto-detected from the document unless you
+        set an override above.
       </label>
       <BulkUploadResults results={results} />
+      <PostUploadPipelineModal
+        open={pipelineOpen}
+        identifiers={pipelineIds}
+        onClose={() => setPipelineOpen(false)}
+      />
     </BulkUploadShell>
   );
 }

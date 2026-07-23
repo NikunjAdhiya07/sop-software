@@ -37,10 +37,14 @@ interface PreparedQuestion extends MCQQuestion { displayOptions: DisplayOption[]
 interface QuizSettings {
   passingScore: number;
   timeLimitMinutes: number;
+  shuffleMode?: 'options' | 'questions' | 'both' | 'none';
+  shuffleQuestions?: boolean;
   shuffleOptions: boolean;
   showAnswersAfterTrial: boolean;
+  allowRetakeAfterPass?: boolean;
   maxAttempts: number;       // total exam attempts before answers are revealed (0 = unlimited)
   examQuestionCount: number; // full-exam question count, used to pace the timer
+  trialQuestionCount?: number;
 }
 
 interface JourneyData {
@@ -522,23 +526,16 @@ function formatTime(seconds: number): string {
 
 const MAX_TAB_VIOLATIONS = 2; // warnings before auto-submit
 
-// Default pacing when no admin time limit is set — the exam timer is always on.
-const SECONDS_PER_QUESTION = 45;
-
-/** Seconds allotted for a quiz of `questionCount` questions. Honors an explicit
- *  admin time limit (scaled per-question so retests get proportional time), else
- *  falls back to the per-question default so every test is timed. */
+/** Seconds allotted for a quiz. `timeLimitMinutes === 0` means no timer. */
 function timerSecondsFor(settings: QuizSettings | null, questionCount: number): number {
   if (questionCount <= 0) return 0;
   const configured = settings?.timeLimitMinutes ?? 0;
-  if (configured > 0) {
-    const fullCount = settings?.examQuestionCount && settings.examQuestionCount > 0
-      ? settings.examQuestionCount
-      : questionCount;
-    const perQuestion = (configured * 60) / fullCount;
-    return Math.max(30, Math.ceil(perQuestion * questionCount));
-  }
-  return questionCount * SECONDS_PER_QUESTION;
+  if (configured <= 0) return 0; // no limit
+  const fullCount = settings?.examQuestionCount && settings.examQuestionCount > 0
+    ? settings.examQuestionCount
+    : questionCount;
+  const perQuestion = (configured * 60) / fullCount;
+  return Math.max(30, Math.ceil(perQuestion * questionCount));
 }
 
 function QuizStep({
@@ -569,6 +566,8 @@ function QuizStep({
   // Exam/retest attempts used this session — drives the attempt allocation and
   // gates when correct answers are finally revealed. (Demo attempts don't count.)
   const [examAttempts, setExamAttempts] = useState(0);
+  /** 'trial' = demo assessment; 'exam' = formal scored attempt. */
+  const [quizMode, setQuizMode] = useState<'trial' | 'exam'>('exam');
 
   // Tab-switch violation tracking (exam only)
   const violationsRef = useRef(0);
@@ -591,23 +590,53 @@ function QuizStep({
   // Gujarati assessment pulls from the Gujarati MCQ bank via the lang param.
   const lang = step.id === 'quizGu' ? 'gu' : 'en';
 
-  const fetchQuestions = useCallback(async () => {
+  const fetchQuestions = useCallback(async (mode: 'trial' | 'exam' = 'exam') => {
     setPhase('loading');
     setAnswers({});
     setScore(0);
     setError('');
     setIsRetest(false);
     setRetestQueue([]);
-    setExamAttempts(0);
+    if (mode === 'exam') setExamAttempts(0);
     try {
-      const res = await fetch(`/api/lms/quiz/${sopCode}?mode=exam&lang=${lang}`);
+      const res = await fetch(`/api/lms/quiz/${sopCode}?mode=${mode}&lang=${lang}`);
       const data = await res.json() as {
         questions?: MCQQuestion[];
         settings?: QuizSettings;
         error?: string;
       };
-      if (!data.questions?.length) { setError(data.error || 'No questions available.'); setPhase('review'); return; }
+
+      // Demo disabled or empty → fall through to formal exam.
+      if (mode === 'trial') {
+        const trialCount = data.settings?.trialQuestionCount ?? 0;
+        if (trialCount <= 0 || !data.questions?.length) {
+          setSettings(data.settings ?? null);
+          const examRes = await fetch(`/api/lms/quiz/${sopCode}?mode=exam&lang=${lang}`);
+          const examData = await examRes.json() as {
+            questions?: MCQQuestion[];
+            settings?: QuizSettings;
+            error?: string;
+          };
+          if (!examData.questions?.length) {
+            setError(examData.error || 'No questions available.');
+            setPhase('review');
+            return;
+          }
+          setSettings(examData.settings ?? data.settings ?? null);
+          setQuizMode('exam');
+          setQuestions(prepareQuestions(examData.questions, examData.settings?.shuffleOptions ?? false));
+          setPhase('intro');
+          return;
+        }
+      }
+
+      if (!data.questions?.length) {
+        setError(data.error || 'No questions available.');
+        setPhase('review');
+        return;
+      }
       setSettings(data.settings ?? null);
+      setQuizMode(mode);
       setQuestions(prepareQuestions(data.questions, data.settings?.shuffleOptions ?? false));
       setPhase('intro');
     } catch {
@@ -616,12 +645,12 @@ function QuizStep({
     }
   }, [sopCode, lang]);
 
-  // Start straight on the exam (no demo). Skip auto-start when already passed.
-  useEffect(() => { if (!step.completed) fetchQuestions(); }, [fetchQuestions, step.completed]);
+  // Prefer demo first when configured; otherwise start on the formal exam.
+  useEffect(() => { if (!step.completed) void fetchQuestions('trial'); }, [fetchQuestions, step.completed]);
 
-  // Countdown timer — paced per question.
+  // Countdown timer — only when an admin time limit is set (formal exam only).
   useEffect(() => {
-    if (phase !== 'answering' || questions.length === 0) {
+    if (phase !== 'answering' || questions.length === 0 || quizMode === 'trial') {
       setTimeLeft(null);
       return;
     }
@@ -639,11 +668,11 @@ function QuizStep({
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [phase, settings, questions.length]);
+  }, [phase, settings, questions.length, quizMode]);
 
-  // Tab-switch / focus-loss detection during exam
+  // Tab-switch / focus-loss detection during formal exam only
   useEffect(() => {
-    if (phase !== 'answering') return;
+    if (phase !== 'answering' || quizMode === 'trial') return;
 
     const fireViolation = () => {
       const now = Date.now();
@@ -655,7 +684,6 @@ function QuizStep({
       setViolations(v);
 
       if (v > MAX_TAB_VIOLATIONS) {
-        // Already past limit — auto-submit
         submitRef.current?.();
       } else {
         setShowViolationWarning(true);
@@ -671,7 +699,7 @@ function QuizStep({
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('blur', onBlur);
     };
-  }, [phase]);
+  }, [phase, quizMode]);
 
   const handleSubmit = useCallback(() => {
     let correct = 0;
@@ -681,18 +709,20 @@ function QuizStep({
       else wrong.push(q);
     }
     const pct = questions.length > 0 ? Math.round((correct / questions.length) * 100) : 0;
-    const newAttempts = localAttempts + 1;
     setScore(pct);
-    setLocalAttempts(newAttempts);
     setRetestQueue(wrong);
     setPhase('review');
 
-    // A retest must be answered perfectly; the main exam uses the configured score.
+    // Demo does not count toward attempts / progress.
+    if (quizMode === 'trial') return;
+
+    const newAttempts = localAttempts + 1;
+    setLocalAttempts(newAttempts);
     const required = isRetest ? 100 : (settings?.passingScore ?? 80);
     const passed = pct >= required;
     setExamAttempts((n) => n + 1);
     onComplete(pct, passed, newAttempts);
-  }, [questions, answers, localAttempts, isRetest, settings, onComplete]);
+  }, [questions, answers, localAttempts, isRetest, settings, onComplete, quizMode]);
 
   // Keep ref in sync so timer can auto-submit
   useEffect(() => { submitRef.current = handleSubmit; }, [handleSubmit]);
@@ -705,8 +735,11 @@ function QuizStep({
     setScore(0);
     setError('');
     setIsRetest(true);
+    setQuizMode('exam');
     setPhase('answering');
   };
+
+  const allowRetake = settings?.allowRetakeAfterPass !== false;
 
   // ── Already passed (step.completed) — show summary ──────────────────────────
   if (step.completed && phase === 'loading' && localAttempts === (step.attempts ?? 0)) {
@@ -718,15 +751,18 @@ function QuizStep({
         <div className="text-center">
           <p className="font-semibold text-gray-800">Assessment completed</p>
           <p className="mt-1 text-sm text-gray-500">
-            You passed with {step.percentage ?? '—'}%. Retake anytime below.
+            You passed with {step.percentage ?? '—'}%.
+            {allowRetake ? ' Retake anytime below.' : ''}
           </p>
         </div>
-        <button
-          onClick={() => fetchQuestions()}
-          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
-        >
-          <RefreshCw className="h-3.5 w-3.5" /> Retake Assessment
-        </button>
+        {allowRetake && (
+          <button
+            onClick={() => void fetchQuestions('exam')}
+            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> Retake Assessment
+          </button>
+        )}
       </div>
     );
   }
@@ -753,25 +789,37 @@ function QuizStep({
 
   // ── Pre-exam intro / confirmation ──────────────────────────────────────────
   if (phase === 'intro') {
+    const isDemo = quizMode === 'trial';
     const introPassing = isRetest ? 100 : (settings?.passingScore ?? 80);
-    const totalSecs = timerSecondsFor(settings, questions.length);
+    const totalSecs = isDemo ? 0 : timerSecondsFor(settings, questions.length);
     const minutes = totalSecs > 0 ? Math.max(1, Math.round(totalSecs / 60)) : null;
     const maxAttempts = settings?.maxAttempts ?? 0;
-    const details = [
-      { Icon: ClipboardList, label: 'Questions', value: `${questions.length}` },
-      { Icon: Clock, label: 'Time limit', value: minutes ? `${minutes} min` : 'Untimed' },
-      { Icon: Award, label: 'Passing score', value: `${introPassing}%` },
-      { Icon: RefreshCw, label: 'Attempts', value: maxAttempts > 0 ? `${maxAttempts}` : 'Unlimited' },
-    ];
+    const details = isDemo
+      ? [
+          { Icon: ClipboardList, label: 'Questions', value: `${questions.length}` },
+          { Icon: Award, label: 'Type', value: 'Demo (no pass/fail)' },
+          { Icon: Clock, label: 'Time limit', value: 'Untimed' },
+          { Icon: RefreshCw, label: 'Answers', value: settings?.showAnswersAfterTrial !== false ? 'Shown after' : 'Hidden' },
+        ]
+      : [
+          { Icon: ClipboardList, label: 'Questions', value: `${questions.length}` },
+          { Icon: Clock, label: 'Time limit', value: minutes ? `${minutes} min` : 'Untimed' },
+          { Icon: Award, label: 'Passing score', value: `${introPassing}%` },
+          { Icon: RefreshCw, label: 'Attempts', value: maxAttempts > 0 ? `${maxAttempts}` : 'Unlimited' },
+        ];
     return (
       <div className="fixed inset-0 z-40 flex items-center justify-center bg-gray-50 p-4">
         <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-7 shadow-xl">
           <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-purple-100">
             <ClipboardList className="h-7 w-7 text-purple-600" />
           </div>
-          <h2 className="text-xl font-bold text-gray-800">{isRetest ? 'Start Retest' : 'Start Assessment'}</h2>
+          <h2 className="text-xl font-bold text-gray-800">
+            {isRetest ? 'Start Retest' : isDemo ? 'Demo Assessment' : 'Start Assessment'}
+          </h2>
           <p className="mt-1 text-sm text-gray-500">
-            Review the details below, then begin when you&apos;re ready.
+            {isDemo
+              ? 'Practice first — this demo does not count toward your score.'
+              : 'Review the details below, then begin when you\'re ready.'}
           </p>
 
           {/* Exam details */}
@@ -791,20 +839,24 @@ function QuizStep({
 
           {/* Rules */}
           <ul className="mt-5 space-y-2 text-sm text-gray-600">
-            <li className="flex items-start gap-2">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              Do not switch tabs or windows — you have {MAX_TAB_VIOLATIONS} warnings before the exam auto-submits.
-            </li>
+            {!isDemo && (
+              <li className="flex items-start gap-2">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                Do not switch tabs or windows — you have {MAX_TAB_VIOLATIONS} warnings before the exam auto-submits.
+              </li>
+            )}
             <li className="flex items-start gap-2">
               <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
               {minutes
                 ? `The exam is timed (${minutes} min) and submits automatically when time runs out.`
                 : 'Answer all questions, then submit.'}
             </li>
-            <li className="flex items-start gap-2">
-              <Award className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              You must score at least {introPassing}% to complete this training.
-            </li>
+            {!isDemo && (
+              <li className="flex items-start gap-2">
+                <Award className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                You must score at least {introPassing}% to complete this training.
+              </li>
+            )}
           </ul>
 
           <div className="mt-6 flex gap-3">
@@ -818,7 +870,8 @@ function QuizStep({
               onClick={() => setPhase('answering')}
               className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-purple-600 py-2.5 text-sm font-semibold text-white shadow hover:bg-purple-700"
             >
-              <ClipboardList className="h-4 w-4" /> {isRetest ? 'Start Retest' : 'Start Exam'}
+              <ClipboardList className="h-4 w-4" />
+              {isRetest ? 'Start Retest' : isDemo ? 'Start Demo' : 'Start Exam'}
             </button>
           </div>
         </div>
@@ -828,16 +881,73 @@ function QuizStep({
 
   // ── Review after exam ──────────────────────────────────────────────────────
   if (phase === 'review') {
+    const isDemo = quizMode === 'trial';
     const passingScore = isRetest ? 100 : (settings?.passingScore ?? 80);
-    const passed = score >= passingScore;
+    const passed = isDemo ? false : score >= passingScore;
     const missedCount = retestQueue.length;
     const maxAttempts = settings?.maxAttempts ?? 0;          // 0 = unlimited
     const attemptsExhausted = maxAttempts > 0 && examAttempts >= maxAttempts;
     const attemptsLeft = maxAttempts > 0 ? Math.max(0, maxAttempts - examAttempts) : null;
-    const canRetest = !passed && missedCount > 0 && !attemptsExhausted;
-    // Correct answers stay hidden through every retry — revealed only once the
-    // learner passes or has used up all allocated attempts without passing.
-    const revealAnswers = passed || attemptsExhausted;
+    const canRetest = !isDemo && !passed && missedCount > 0 && !attemptsExhausted;
+    // Demo: reveal when configured. Exam: reveal only after pass or attempts exhausted.
+    const revealAnswers = isDemo
+      ? (settings?.showAnswersAfterTrial !== false)
+      : (passed || attemptsExhausted);
+
+    if (isDemo) {
+      return (
+        <div className="flex flex-1 flex-col items-center gap-5 py-6">
+          <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-3xl border border-purple-200 bg-linear-to-b from-purple-50 to-white px-8 py-10 text-center shadow-sm">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-purple-100">
+              <ClipboardList className="h-8 w-8 text-purple-600" />
+            </div>
+            <p className="flex items-start justify-center font-black leading-none tracking-tight tabular-nums text-purple-700">
+              <span className="text-7xl sm:text-8xl">{score}</span>
+              <span className="mt-1 text-3xl font-extrabold sm:text-4xl">%</span>
+            </p>
+            <p className="text-base font-bold text-purple-800">Demo complete — this does not count</p>
+            <span className="inline-flex items-center rounded-full bg-white px-3.5 py-1 text-xs font-semibold text-gray-600 shadow-sm ring-1 ring-inset ring-gray-200">
+              {questions.filter((q) => answers[q._id] === q.correctAnswer).length} of {questions.length} correct
+            </span>
+          </div>
+
+          {revealAnswers && (
+            <div className="w-full max-w-2xl space-y-3">
+              {questions.map((q, i) => {
+                const given = answers[q._id];
+                const isRight = given === q.correctAnswer;
+                const correctText = q.displayOptions.find((o) => o.label === q.correctAnswer)?.text ?? q.correctAnswer;
+                const givenText = q.displayOptions.find((o) => o.label === given)?.text;
+                return (
+                  <div
+                    key={q._id}
+                    className={`rounded-xl border p-3 text-sm ${isRight ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}
+                  >
+                    <p className="font-medium text-gray-800">{i + 1}. {q.question}</p>
+                    <p className={`mt-1 text-xs ${isRight ? 'text-green-700' : 'text-red-700'}`}>
+                      {isRight
+                        ? `Correct: ${correctText}`
+                        : <>Your answer: {givenText || '—'} · Correct: {correctText}</>}
+                    </p>
+                    {!isRight && q.explanation && (
+                      <p className="mt-1 text-xs text-gray-500">{q.explanation}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <button
+            onClick={() => void fetchQuestions('exam')}
+            className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-purple-700"
+          >
+            <ClipboardList className="h-3.5 w-3.5" /> Continue to Formal Exam
+          </button>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-1 flex-col items-center gap-5 py-6">
         {/* Prominent score hero */}
@@ -954,7 +1064,7 @@ function QuizStep({
   const q = questions[currentIdx];
   const answeredCount = Object.keys(answers).length;
   const isLast = currentIdx === questions.length - 1;
-  const submitLabel = isRetest ? 'Submit Retest' : 'Submit Exam';
+  const submitLabel = isRetest ? 'Submit Retest' : quizMode === 'trial' ? 'Finish Demo' : 'Submit Exam';
 
   const goToQuestion = (idx: number) => {
     if (idx < 0 || idx >= questions.length) return;
@@ -1025,10 +1135,12 @@ function QuizStep({
       <div className="sticky top-0 z-10 flex items-center gap-4 border-b border-gray-200 bg-white px-4 py-3 shadow-sm">
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-sm font-bold text-gray-800 md:text-base">
-            {isRetest ? 'Retest' : 'Assessment'}
+            {quizMode === 'trial' ? 'Demo' : isRetest ? 'Retest' : 'Assessment'}
           </h1>
           <p className="text-xs text-gray-400">
-            {isRetest
+            {quizMode === 'trial'
+              ? `${questions.length} practice questions · no pass/fail`
+              : isRetest
               ? `${questions.length} missed · Answer all correctly (100%)`
               : `${questions.length} questions · Pass: ${passingScore}%`}
           </p>
@@ -1265,7 +1377,7 @@ export default function JourneyPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const updateProgress = useCallback(async (stepId: string, payload: Record<string, unknown>) => {
+  const updateProgress = useCallback(async (stepId: string, payload: Record<string, unknown>): Promise<number | null> => {
     try {
       const res = await fetch(`/api/lms/progress/${sopCode}`, {
         method: 'PATCH',
@@ -1286,22 +1398,24 @@ export default function JourneyPage() {
           const certData = await certRes.json();
           if (certData.certificate) setHasCert(true);
         }
+        return newPct;
       }
     } catch { /* non-critical */ }
+    return null;
   }, [sopCode, data?.availableSteps, hasCert]);
 
   const markStepComplete = useCallback((stepId: string) => {
     setLocalSteps((prev) =>
       prev.map((s) => (s.id === stepId ? { ...s, completed: true } : s)),
     );
-    updateProgress(stepId, { completed: true });
+    void updateProgress(stepId, { completed: true });
   }, [updateProgress]);
 
   const handleVideoProgress = useCallback((stepId: string, pct: number, ts: number) => {
-    updateProgress(stepId, { percentage: pct, lastTimestamp: ts });
+    void updateProgress(stepId, { percentage: pct, lastTimestamp: ts });
   }, [updateProgress]);
 
-  const handleQuizComplete = useCallback((
+  const handleQuizComplete = useCallback(async (
     stepId: string,
     score: number,
     passed: boolean,
@@ -1314,15 +1428,17 @@ export default function JourneyPage() {
         return { ...s, completed: passed || s.completed, attempts: newAttempts };
       }),
     );
-    updateProgress(stepId, { completed: passed, passed, score, attempts: newAttempts });
 
-    // Trigger celebration and certificate ONLY when the exam is passed in this session
-    if (passed) {
-      setShowCelebration(true);
-      fetch(`/api/lms/certificate/${sopCode}`, { method: 'POST' })
-        .then((r) => r.json())
-        .then((d) => { if (d.certificate) setHasCert(true); })
-        .catch(() => {});
+    const newPct = await updateProgress(stepId, { completed: passed, passed, score, attempts: newAttempts });
+
+    // Certificate + celebration only after progress is confirmed at 100%
+    if (passed && newPct !== null && newPct >= 100) {
+      try {
+        const r = await fetch(`/api/lms/certificate/${sopCode}`, { method: 'POST' });
+        const d = await r.json();
+        if (d.certificate) setHasCert(true);
+        if (r.ok) setShowCelebration(true);
+      } catch { /* non-critical */ }
     }
   }, [updateProgress, sopCode]);
 
@@ -1368,12 +1484,14 @@ export default function JourneyPage() {
               <strong className="text-green-700"> certified as trained</strong> for this SOP.
             </p>
             <div className="mt-5 flex flex-col gap-2">
-              <button
-                onClick={() => { setShowCelebration(false); router.push(`/lms/certificate/${sopCode}`); }}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-600 py-3 text-sm font-semibold text-white shadow hover:bg-green-700"
-              >
-                <Award className="h-4 w-4" /> View Your Certificate
-              </button>
+              {hasCert && (
+                <button
+                  onClick={() => { setShowCelebration(false); router.push(`/lms/certificate/${sopCode}`); }}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-600 py-3 text-sm font-semibold text-white shadow hover:bg-green-700"
+                >
+                  <Award className="h-4 w-4" /> View Your Certificate
+                </button>
+              )}
               <button
                 onClick={() => setShowCelebration(false)}
                 className="w-full rounded-xl border border-gray-200 py-2.5 text-sm font-medium text-gray-500 hover:bg-gray-50"

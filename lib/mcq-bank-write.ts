@@ -1,4 +1,4 @@
-import MCQBank, { type IMCQ, type DifficultyLevel } from "@/models/MCQBank";
+import MCQBank, { type IMCQ, type IMcqAnnexureUsage, type DifficultyLevel } from "@/models/MCQBank";
 import type { ISOP } from "@/models/SOP";
 import { enrichMcqRationale } from "@/lib/mcq-rationale";
 import { isDuplicateMcqQuestionForGeneration } from "@/lib/similarity";
@@ -19,6 +19,8 @@ export interface BankInputMcq {
   /** Exact SOP section/clause the question traces back to (e.g. "4.6.1.4").
    *  Optional here so legacy callers without it still type-check. */
   sopReference?: string;
+  /** Stamp creative-fill MCQs so annexure swap and the viewer can preserve/mark them. */
+  isCreative?: boolean;
 }
 
 const DIFFICULTY_MAP: Record<string, DifficultyLevel> = {
@@ -83,6 +85,8 @@ export function toBankMcq(q: BankInputMcq, sopIdentifier: string): IMCQ {
     isChecked: false,
     isReviewed: false,
     isSimilar: false,
+    fromAnnexure: false,
+    isCreative: Boolean(q.isCreative),
   };
 }
 
@@ -180,6 +184,7 @@ export async function appendGeneratedToBank(
   language: "English" | "Gujarati",
   generated: BankInputMcq[],
   aiModel = "gemini-2.5-flash",
+  annexureUsage?: IMcqAnnexureUsage,
 ): Promise<BankWriteResult> {
   const idRegex = identifierRegex(sop.identifier);
   const banks = await loadActiveBanks(sop.identifier, language);
@@ -213,6 +218,7 @@ export async function appendGeneratedToBank(
       generatedAt: new Date(),
       difficultyDistribution: difficultyDistribution(toAdd),
       aiModel,
+      annexureUsage,
     });
     return {
       bankId: String(created._id),
@@ -231,6 +237,9 @@ export async function appendGeneratedToBank(
     }
     bank.totalQuestions = bank.mcqs.length;
     bank.difficultyDistribution = difficultyDistribution(bank.mcqs);
+    // Stamp the latest run's annexure usage — questions just added to this bank
+    // were generated with whatever this run folded in.
+    if (annexureUsage) bank.annexureUsage = annexureUsage;
     await bank.save();
   }
   const total = await activeBankMcqCount(sop.identifier, language);

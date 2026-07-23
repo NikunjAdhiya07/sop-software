@@ -52,6 +52,15 @@ export function DashboardClient() {
 
   const handleDepartmentAdded = useCallback((name: string) => {
     setDepartmentList((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    // Immediately show an empty capsule so new depts appear in "By Department"
+    // before the next full stats refetch (SOPs will fill counts on upload/refresh).
+    setStats((prev) => {
+      if (!prev) return prev;
+      if (prev.departments.some((d) => d.department === name)) return prev;
+      const empty = buildDashboardStats([], [name]).departments.find((d) => d.department === name);
+      if (!empty) return prev;
+      return { ...prev, departments: [...prev.departments, empty] };
+    });
   }, []);
 
   const handleDepartmentDeleted = useCallback((name: string) => {
@@ -592,6 +601,7 @@ export function DashboardClient() {
         open={folderUploadOpen}
         onClose={() => setFolderUploadOpen(false)}
         onSuccess={refresh}
+        departmentList={departmentList}
       />
       <GujaratiFolderUploadModal
         open={gujaratiUploadOpen}

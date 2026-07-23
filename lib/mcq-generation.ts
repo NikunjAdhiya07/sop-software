@@ -1,5 +1,5 @@
 import SOP, { type ISOP } from "@/models/SOP";
-import MCQBank from "@/models/MCQBank";
+import MCQBank, { type IMcqAnnexureUsage } from "@/models/MCQBank";
 import MCQGenJob, { type McqGenLanguage, type McqGenMode, type IMcqGenLangProgress } from "@/models/MCQGenJob";
 import { generateJson, isGeminiOverloadedError } from "@/lib/gemini";
 import { generateOllamaJson } from "@/lib/ollama";
@@ -31,7 +31,10 @@ import {
   scoreSopRecordForMcq,
 } from "@/lib/mcq-source-text";
 import { isDuplicateMcqQuestionForGeneration } from "@/lib/similarity";
-import { buildAnnexureSupplement } from "@/lib/compliance-sop-content";
+import {
+  buildAnnexureSupplementDetailed,
+  countLinkedAnnexureDocuments,
+} from "@/lib/compliance-sop-content";
 import {
   ensureSingleMcqGenJob,
   healOrphanedMcqGenJobIfNeeded,
@@ -1024,7 +1027,7 @@ async function generateForLanguageCreative(
       const fid = q.factId ? normalizeKnowledgeFactId(q.factId) : "";
       if (fid) batchFactIds.add(fid);
       accepted.push(q);
-      candidates.push(toBankInput(q));
+      candidates.push({ ...toBankInput(q), isCreative: true });
     }
 
     if (candidates.length === 0 && questions.length > 0) {
@@ -1257,12 +1260,22 @@ export async function runMcqGeneration(
   // persisted back to SOP, so the canonical document/viewer/compliance-without-
   // annexures paths are unaffected; only mcqClauseCache (keyed by content hash)
   // gets rebuilt to match, exactly like a normal content change would.
-  const annexureSupplement = await buildAnnexureSupplement(sops);
-  if (annexureSupplement) {
+  const annexureResult = await buildAnnexureSupplementDetailed(sops);
+  if (annexureResult.text) {
     for (const [, sop] of reps) {
-      sop.content = `${sop.content ?? ""}\n\n${annexureSupplement}`;
+      sop.content = `${sop.content ?? ""}\n\n${annexureResult.text}`;
     }
   }
+  // Recorded on every bank this run writes, so the MCQ registry can tell whether
+  // a bank's questions actually saw annexure text (annexures are often linked
+  // after MCQs were generated).
+  const annexureUsage: IMcqAnnexureUsage = {
+    linkedCount: countLinkedAnnexureDocuments(sops),
+    includedCount: annexureResult.included.length,
+    skippedCount: annexureResult.skipped.length,
+    includedLabels: annexureResult.included.map((a) => a.label),
+    recordedAt: new Date(),
+  };
 
   let eligible = [...reps.entries()].filter(([, sop]) => scoreSopRecordForMcq(sop) >= 50);
   if (languageScope) {
@@ -1334,6 +1347,14 @@ export async function runMcqGeneration(
   const providerLabel = mcqProviderLabel(effectiveProvider);
   const langLabels = eligible.map(([lang]) => lang).join(" + ");
   await pushLog(identifier, `Starting ${mode} · ${langLabels} · provider: ${providerLabel}`);
+  await pushLog(
+    identifier,
+    annexureUsage.linkedCount === 0
+      ? "No annexure connected — generating from the main SOP content only"
+      : annexureUsage.includedCount > 0
+        ? `Annexures: including ${annexureUsage.includedCount} of ${annexureUsage.linkedCount} linked file(s)`
+        : `Annexures: ${annexureUsage.linkedCount} linked but none readable — generating from the main SOP content only`,
+  );
   if (effectiveProvider === "claude" && !anthropicMcqApiAvailable()) {
     await pushLog(
       identifier,
@@ -1396,7 +1417,13 @@ export async function runMcqGeneration(
         ctx,
         async ({ batchesDone, newMcqs }) => {
           const { inserted: batchInserted, skipped: batchSkipped, total: bankTotal, insertedQuestions } =
-            await appendGeneratedToBank(sop, lp.language, newMcqs, resolveMcqAiModel(effectiveProvider));
+            await appendGeneratedToBank(
+              sop,
+              lp.language,
+              newMcqs,
+              resolveMcqAiModel(effectiveProvider),
+              annexureUsage,
+            );
 
           lp.batchesDone = batchesDone;
           lp.collected = bankTotal;
