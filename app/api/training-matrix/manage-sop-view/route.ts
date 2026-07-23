@@ -1,3 +1,4 @@
+import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import MatrixSOPAssignment from "@/models/MatrixSOPAssignment";
 import TrainingMatrixRecord from "@/models/TrainingMatrixRecord";
@@ -28,17 +29,13 @@ import {
   sopFamilyKeyFromIdentifier,
   sopCodeMatchesSearch,
 } from "@/lib/sopIdentifierNormalize";
-import { NextRequest, NextResponse } from "next/server";
+import {
+  getTrainingMatrixDepartments,
+} from "@/lib/trainingMatrixDepartments.server";
+import {
+  resolveTrainingMatrixDepartment,
+} from "@/lib/trainingMatrixDepartments";
 
-const DEFAULT_DEPARTMENTS = [
-  "QA",
-  "QC",
-  "Microbiology",
-  "Production",
-  "Store",
-  "Engineering",
-  "Personnel",
-];
 const MONTH_NAMES = [
   "",
   "January",
@@ -337,6 +334,14 @@ async function buildManageSopViewResponse(
     await connectDB();
     const dbConnectMs = elapsedMs(dbConnectStartMs);
 
+    // Live department list (core + custom dashboard depts like "abcd").
+    const departments = await getTrainingMatrixDepartments();
+    const ensureDept = (name: string) => {
+      if (!departments.some((d) => d.toLowerCase() === name.toLowerCase())) {
+        departments.push(name);
+      }
+    };
+
     const dataFetchStartMs = nowMs();
     // Light queries first — derive the active matrix year, then scope the heavy
     // TrainingMatrixRecord aggregation to that year only (year=all is not a
@@ -394,21 +399,14 @@ async function buildManageSopViewResponse(
     // Build dept → baseSopCode → monthNums (1..12) schedule map.
     // Multiple uploads per dept are merged; the most recent upload wins per (dept, sopCode).
     const scheduleMap = new Map<string, Map<string, number[]>>();
-    for (const dept of DEFAULT_DEPARTMENTS) scheduleMap.set(dept, new Map());
+    for (const dept of departments) scheduleMap.set(dept, new Map());
 
     const normalizeDept = (raw: string | undefined | null): string | null => {
-      if (!raw) return null;
-      const u = String(raw).trim().toUpperCase();
-      if (!u) return null;
-      if (u === "QA") return "QA";
-      if (u === "QC") return "QC";
-      if (u.startsWith("MICRO")) return "Microbiology";
-      if (u.startsWith("PROD")) return "Production";
-      if (u.startsWith("STORE") || u === "STOR") return "Store";
-      if (u.startsWith("ENG")) return "Engineering";
-      if (u.startsWith("PERSON") || u === "HR") return "Personnel";
-      const direct = DEFAULT_DEPARTMENTS.find((d) => d.toUpperCase() === u);
-      return direct || null;
+      const resolved = resolveTrainingMatrixDepartment(raw, departments);
+      if (!resolved) return null;
+      ensureDept(resolved);
+      if (!scheduleMap.has(resolved)) scheduleMap.set(resolved, new Map());
+      return resolved;
     };
 
     const monthNamesToNums = (raw: string): number[] => {
@@ -541,22 +539,32 @@ async function buildManageSopViewResponse(
       string,
       Array<{ name: string; designation: string }>
     >();
-    for (const dept of DEFAULT_DEPARTMENTS) {
+    for (const dept of departments) {
       designationsByDept.set(dept, new Set<string>());
       empCountMap.set(dept, new Map<string, number>());
       empRoster.set(dept, []);
     }
     for (const emp of employees as any[]) {
       if (!emp.department || !emp.designation) continue;
-      const set = designationsByDept.get(emp.department);
+      const empDept =
+        resolveTrainingMatrixDepartment(emp.department, departments) ||
+        String(emp.department).trim();
+      if (!empDept) continue;
+      ensureDept(empDept);
+      if (!designationsByDept.has(empDept)) {
+        designationsByDept.set(empDept, new Set<string>());
+        empCountMap.set(empDept, new Map<string, number>());
+        empRoster.set(empDept, []);
+      }
+      const set = designationsByDept.get(empDept);
       if (set) set.add(emp.designation as string);
-      const deptMap = empCountMap.get(emp.department);
+      const deptMap = empCountMap.get(empDept);
       if (deptMap)
         deptMap.set(
           emp.designation as string,
           (deptMap.get(emp.designation as string) ?? 0) + 1,
         );
-      const roster = empRoster.get(emp.department);
+      const roster = empRoster.get(empDept);
       const name = String((emp as any).name || "").trim();
       if (roster && name)
         roster.push({ name, designation: emp.designation as string });
@@ -573,14 +581,19 @@ async function buildManageSopViewResponse(
     for (const record of trainingAgg) {
       const id = record._id as any;
       const stripCode = stripVersion(id.sopCode || "");
+      const trainDept =
+        resolveTrainingMatrixDepartment(id.department, departments) ||
+        String(id.department || "").trim();
+      if (!trainDept) continue;
+      ensureDept(trainDept);
       if (!trainingMap.has(stripCode)) {
         trainingMap.set(stripCode, new Map());
       }
       const deptMap = trainingMap.get(stripCode)!;
-      if (!deptMap.has(id.department)) {
-        deptMap.set(id.department, new Map());
+      if (!deptMap.has(trainDept)) {
+        deptMap.set(trainDept, new Map());
       }
-      const designationMap = deptMap.get(id.department)!;
+      const designationMap = deptMap.get(trainDept)!;
       if (!designationMap.has(id.designation)) {
         designationMap.set(id.designation, new Map());
       }
@@ -596,12 +609,17 @@ async function buildManageSopViewResponse(
     const assignmentMap = new Map<string, Map<string, string[]>>();
     for (const assignment of assignments) {
       const stripCode = stripVersion(assignment.sopCode);
+      const assignDept =
+        resolveTrainingMatrixDepartment(assignment.department, departments) ||
+        String(assignment.department || "").trim();
+      if (!assignDept) continue;
+      ensureDept(assignDept);
       if (!assignmentMap.has(stripCode)) {
         assignmentMap.set(stripCode, new Map());
       }
       const deptMap = assignmentMap.get(stripCode)!;
       deptMap.set(
-        assignment.department,
+        assignDept,
         assignment.designationApplicability || [],
       );
     }
@@ -626,24 +644,14 @@ async function buildManageSopViewResponse(
       return s;
     };
 
-    // Map normalized DB department values back to the canonical names used by the UI
-    // (MasterSOPRepository stores them uppercase, sometimes with extra words).
+    // Map normalized DB department values back to the canonical names used by the UI.
     const normalizeDeptValue = (
       raw: string | undefined | null,
     ): string | null => {
-      if (!raw) return null;
-      const u = String(raw).trim().toUpperCase();
-      if (!u) return null;
-      if (u === "QA") return "QA";
-      if (u === "QC") return "QC";
-      if (u.startsWith("MICRO")) return "Microbiology";
-      if (u.startsWith("PROD")) return "Production";
-      if (u.startsWith("STORE") || u === "BS" || u === "STOR") return "Store";
-      if (u.startsWith("ENG")) return "Engineering";
-      if (u.startsWith("PERSON") || u.startsWith("HR")) return "Personnel";
-      // Direct match against the canonical list (rare)
-      const direct = DEFAULT_DEPARTMENTS.find((d) => d.toUpperCase() === u);
-      return direct || null;
+      const resolved = resolveTrainingMatrixDepartment(raw, departments);
+      if (!resolved) return null;
+      ensureDept(resolved);
+      return resolved;
     };
 
     // Build sopCode → primaryDepartment map from dashboard registry + SOP collection.
@@ -859,7 +867,7 @@ async function buildManageSopViewResponse(
 
     // Build response rows
     const sops: SOPViewRow[] = filteredSOPs.map(([sopCode, sopName]) => {
-      const deptStats: SOPViewDeptStat[] = DEFAULT_DEPARTMENTS.map((dept) => {
+      const deptStats: SOPViewDeptStat[] = departments.map((dept) => {
         const deptAssignmentsRaw = assignmentMap.get(sopCode)?.get(dept) || [];
         const deptAssignments = deptAssignmentsRaw
           .flatMap((v) => String(v || "").split(/[;,/|]/))
@@ -1041,10 +1049,9 @@ async function buildManageSopViewResponse(
       employeesByDeptObj[dept] = list;
     }
 
-    // Custom department order: QA → QC → Microbiology → Production → Store → Engineering → Personnel.
-    // Within each department, sort by sopCode. SOPs with no resolvable primary dept go last.
+    // Custom department order from the live list. SOPs with no resolvable primary dept go last.
     const deptOrder = new Map<string, number>(
-      DEFAULT_DEPARTMENTS.map((d, i) => [d, i]),
+      departments.map((d, i) => [d, i]),
     );
     const deptRank = (sop: SOPViewRow): number => {
       // Prefer the SOP's registry-based primary department; otherwise the first dept it counts for.
@@ -1057,7 +1064,7 @@ async function buildManageSopViewResponse(
           if (idx !== undefined) return idx;
         }
       }
-      return DEFAULT_DEPARTMENTS.length; // unknown → last
+      return departments.length; // unknown → last
     };
 
     // Pre-compute schedule SOP counts per (dept, month) DIRECTLY from the snapshot
@@ -1067,7 +1074,7 @@ async function buildManageSopViewResponse(
     const sopCountsByDeptMonth: Record<string, Record<number, number>> = {};
     const sopCountsByMonth: Record<number, number> = {};
     const sopCountsByDept: Record<string, number> = {};
-    for (const dept of DEFAULT_DEPARTMENTS) {
+    for (const dept of departments) {
       sopCountsByDeptMonth[dept] = {};
       for (let m = 1; m <= 12; m++) sopCountsByDeptMonth[dept][m] = 0;
       sopCountsByDept[dept] = 0;
@@ -1076,7 +1083,7 @@ async function buildManageSopViewResponse(
     const monthSopSeen = new Map<number, Set<string>>();
     for (let m = 1; m <= 12; m++) monthSopSeen.set(m, new Set());
 
-    for (const dept of DEFAULT_DEPARTMENTS) {
+    for (const dept of departments) {
       const sched = scheduleMap.get(dept);
       if (!sched) continue;
       for (const [, monthNums] of sched) {
@@ -1176,7 +1183,7 @@ async function buildManageSopViewResponse(
         if (ra !== rb) return ra - rb;
         return a.sopCode.localeCompare(b.sopCode);
       }),
-      departments: DEFAULT_DEPARTMENTS,
+      departments,
       designationsByDept: designationsByDeptObj,
       employeeCountsByDeptDesig: employeeCountsByDeptDesigObj,
       employeesByDept: employeesByDeptObj,

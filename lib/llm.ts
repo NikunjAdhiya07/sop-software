@@ -99,6 +99,15 @@ export async function generateJson<T>(
   const p = providerOverride ?? getProvider();
   if (p === "ollama") return generateOllamaJson<T>(system, user, 16_384);
   if (p === "claude") return generateClaudeCliJson<T>(system, user);
+  if (p === "codex") {
+    return generateCodexCliJson<T>(
+      system,
+      user,
+      (text) => JSON.parse(extractJsonPayload(text)) as T,
+      "mcq-json",
+      getMcqCodexModel(),
+    );
+  }
   return generateGeminiJson<T>(system, user, options);
 }
 

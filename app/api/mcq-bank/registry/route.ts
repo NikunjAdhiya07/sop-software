@@ -5,6 +5,10 @@ import { requireAuth } from "@/lib/withAuth";
 import { getGroupedRegistryRows } from "@/lib/dashboardRegistrySource";
 import { sopFamilyGroupKey } from "@/lib/sop-utils";
 import {
+  deriveMcqAnnexureStatus,
+  type McqAnnexureStatus,
+} from "@/lib/mcqAnnexureStatus";
+import {
   aggregateMcqBanksByFamily,
   buildActiveSopFamilyMap,
   findObsoleteMcqFamilies,
@@ -29,6 +33,12 @@ type RawBank = {
   mediumCount: number;
   hardCount: number;
   updatedAt?: Date;
+  annexureUsage?: {
+    linkedCount?: number;
+    includedCount?: number;
+    skippedCount?: number;
+    includedLabels?: string[];
+  };
 };
 
 type RegistryEntry = {
@@ -63,6 +73,12 @@ type RegistryEntry = {
   /** Count of annexure files linked to this SOP family — the MCQ generation
    *  pipeline folds their extracted text into the prompt when > 0. */
   annexureCount: number;
+  /** Whether the family's current MCQs were actually generated from those
+   *  annexures ("included"), or the annexures were linked after / could not be
+   *  read ("linked-not-used"), or none are connected at all ("none"). */
+  annexureStatus: McqAnnexureStatus;
+  /** Annexure labels the generation run folded into the prompt. */
+  annexureIncludedLabels: string[];
 };
 
 interface FamilyBank {
@@ -78,6 +94,10 @@ interface FamilyBank {
   guQ: number;
   lastUpdated: Date | null;
   banks: { id: string; langCode: "ENG" | "GUJ" }[];
+  /** Highest annexure-included count any of the family's banks recorded at
+   *  generation time — 0 means no bank was built from annexure text. */
+  annexuresIncluded: number;
+  annexureLabels: string[];
 }
 
 const bankProject = {
@@ -106,6 +126,7 @@ const bankProject = {
   hardCount: {
     $size: { $filter: { input: { $ifNull: ["$mcqs", []] }, as: "q", cond: { $eq: ["$$q.difficulty", "Hard"] } } },
   },
+  annexureUsage: 1,
 };
 
 function foldBanks(rawBanks: RawBank[], includeFam: (fam: string, bank: RawBank) => boolean): Map<string, FamilyBank> {
@@ -119,6 +140,7 @@ function foldBanks(rawBanks: RawBank[], includeFam: (fam: string, bank: RawBank)
         easyQ: 0, mediumQ: 0, hardQ: 0,
         enQ: 0, guQ: 0,
         lastUpdated: null, banks: [],
+        annexuresIncluded: 0, annexureLabels: [],
       });
     }
     const e = banksByFamily.get(fam)!;
@@ -133,6 +155,11 @@ function foldBanks(rawBanks: RawBank[], includeFam: (fam: string, bank: RawBank)
     if (langCode === "GUJ") e.guQ += b.totalQuestions;
     else e.enQ += b.totalQuestions;
     if (b._id) e.banks.push({ id: String(b._id), langCode });
+    const included = b.annexureUsage?.includedCount ?? 0;
+    if (included > e.annexuresIncluded) e.annexuresIncluded = included;
+    for (const label of b.annexureUsage?.includedLabels ?? []) {
+      if (!e.annexureLabels.includes(label)) e.annexureLabels.push(label);
+    }
     const ts = b.updatedAt ? new Date(b.updatedAt) : null;
     if (ts && (!e.lastUpdated || ts > e.lastUpdated)) e.lastUpdated = ts;
   }
@@ -185,6 +212,13 @@ function toEntry(
     guMcqCount: bank?.guQ ?? 0,
     isObsoleteMcq,
     annexureCount,
+    // Live linked count vs. what generation recorded: annexures linked after the
+    // MCQs were made (or unreadable ones) stay "linked-not-used" until regenerate.
+    annexureStatus: deriveMcqAnnexureStatus({
+      linkedCount: annexureCount,
+      includedCount: bank?.annexuresIncluded ?? 0,
+    }),
+    annexureIncludedLabels: bank?.annexureLabels ?? [],
   };
 }
 
@@ -265,6 +299,8 @@ async function buildFullRegistry() {
         guQ: fam.guQ,
         lastUpdated: fam.lastUpdated,
         banks: fam.banks,
+        annexuresIncluded: 0,
+        annexureLabels: [],
       },
       true,
     );

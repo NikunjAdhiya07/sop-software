@@ -653,6 +653,10 @@ export async function reviveRegistryGroup(group: ISOP[]) {
  * {@link markRegistryObsolete}, this is irreversible — the records (all versions
  * and languages) are deleted outright. Stored files on the CDN are left intact;
  * this only purges the registry rows.
+ *
+ * Callers that also need files-import manifest / archive cleanup should invoke
+ * `clearImportStateAfterPermanentDelete` from a server-only route (do not import
+ * sop-files-import here — this module is used by client components).
  */
 export async function deleteRegistryGroup(group: ISOP[]) {
   await Promise.all(group.map((record) => record.deleteOne()));
@@ -1395,8 +1399,13 @@ function buildCapsule(department: string, sops: RegistrySOP[]): DepartmentCapsul
 
 export function buildDashboardStats(registry: RegistrySOP[], extraDepartments: string[] = []): DashboardStats {
   const active = registry.filter((s) => !s.isObsolete);
-  const sopDepts = [...new Set(active.map((s) => s.department))];
-  const departments = sortByDeptOrder([...new Set([...sopDepts, ...extraDepartments])]);
+  const sopDepts = [...new Set(active.map((s) => s.department))].filter(
+    (d) => d && !EXCLUDED_DASHBOARD_DEPT.has(d.toLowerCase()),
+  );
+  const extras = extraDepartments.filter(
+    (d) => d && !EXCLUDED_DASHBOARD_DEPT.has(d.toLowerCase()),
+  );
+  const departments = sortByDeptOrder([...new Set([...sopDepts, ...extras])]);
   const deptCapsules = departments.map((d) =>
     buildCapsule(d, active.filter((s) => s.department === d)),
   );
@@ -1517,9 +1526,13 @@ export function resolveSopVersion(identifier: string, storedVersion?: string | n
 export function extractSopCodeFromSegment(segment: string): string | null {
   const trimmed = segment.trim();
   const hyphenated = trimmed.match(/^([A-Z]{2,}[A-Z0-9]*-\d+)/i);
-  if (hyphenated) return hyphenated[1].toUpperCase().replace(/_/g, "-");
+  if (hyphenated && isPlausibleSopDocumentCode(hyphenated[1])) {
+    return hyphenated[1].toUpperCase().replace(/_/g, "-");
+  }
   const segmented = trimmed.match(/^([A-Z]{2,}-[A-Z]{2,}-\d+)/i);
-  if (segmented) return segmented[1].toUpperCase().replace(/_/g, "-");
+  if (segmented && isPlausibleSopDocumentCode(segmented[1])) {
+    return segmented[1].toUpperCase().replace(/_/g, "-");
+  }
   return null;
 }
 
@@ -1532,15 +1545,60 @@ export function titleFromFolderSegment(segment: string, sopCode: string): string
   return stripped || null;
 }
 
+/**
+ * True for real plant SOP codes (PEGE22-03, QAGE01-09).
+ * False for facility/site labels that only look similar (WADHWAN-2, SITE-1).
+ */
+export function isPlausibleSopDocumentCode(raw: string): boolean {
+  const u = String(raw || "")
+    .toUpperCase()
+    .replace(/_/g, "-")
+    .trim();
+  if (!u) return false;
+  // All-letter base + hyphen + number → site/facility name, not an SOP no.
+  if (/^[A-Z]{2,}-\d+$/.test(u)) return false;
+  // Standard: letters + document index digits + revision (PEGE22-03, PRCL24-0)
+  if (/^[A-Z]{2,6}\d+-\d+$/.test(u)) return true;
+  // Segmented: XX-YY-N
+  if (/^[A-Z]{2,}-[A-Z]{2,}-\d+$/.test(u)) return true;
+  const last = u.lastIndexOf("-");
+  if (last <= 0) return false;
+  const base = u.slice(0, last);
+  const rev = u.slice(last + 1);
+  return /^\d+$/.test(rev) && /[0-9]/.test(base) && /^[A-Z][A-Z0-9]*$/i.test(base);
+}
+
+/** Collect plausible SOP codes embedded in a filename/path/title string. */
+export function extractSopIdentifierCandidates(text: string): string[] {
+  const matches = [
+    ...String(text || "").matchAll(/([A-Z]{2,}[A-Z0-9]*-\d+|[A-Z]{2,}-[A-Z]{2,}-\d+)/gi),
+  ];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of matches) {
+    const raw = m[1].toUpperCase().replace(/_/g, "-");
+    if (!isPlausibleSopDocumentCode(raw)) continue;
+    const key = normalizeSopIdentifierKey(raw);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(raw);
+  }
+  return out;
+}
+
+/** Prefer the real SOP code in long names (never facility labels like WADHWAN-2). */
+export function pickBestSopIdentifierFromText(text: string): string | undefined {
+  const candidates = extractSopIdentifierCandidates(text);
+  return candidates[0];
+}
+
 export function extractIdentifierFromFilename(filename: string): string {
   const base = filename.replace(/\.[^.]+$/, "");
   const fromSegment = extractSopCodeFromSegment(base);
   if (fromSegment) return fromSegment;
-  const embedded = base.match(/([A-Z]{2,}[A-Z0-9]*-\d+)/i);
-  if (embedded) return embedded[1].toUpperCase().replace(/_/g, "-");
-  const segmented = base.match(/([A-Z]{2,}-[A-Z]{2,}-\d+)/i);
-  if (segmented) return segmented[1].toUpperCase().replace(/_/g, "-");
-  return base.slice(0, 20).toUpperCase();
+  const best = pickBestSopIdentifierFromText(base);
+  if (best) return best;
+  return "";
 }
 
 const FOLDER_DEPARTMENT_ALIASES: Record<string, string> = {
@@ -1615,6 +1673,64 @@ function normalizeFolderDepartment(segment: string): string | null {
   return null;
 }
 
+/** Strip leading "7. " numbering and take the label before " - Title". */
+function cleanDeptFolderLabel(segment: string): string {
+  const stripped = segment
+    .trim()
+    .replace(/[_]+/g, " ")
+    .replace(/^\d+[.)]\s*/, "")
+    .trim();
+  // Prefer split on spaced dash (SOP folder titles); keep hyphenated codes intact.
+  const spaced = stripped.split(/\s+[-–]\s+/)[0]?.trim();
+  return spaced || stripped;
+}
+
+const JUNK_DEPT_FOLDER_NAMES = new Set([
+  "versions",
+  "version",
+  "english",
+  "gujarati",
+  "eng",
+  "guj",
+  "annexure",
+  "annexures",
+  "uploads",
+  "files",
+  "docx",
+  "pdf",
+  "prior",
+  "obsolete",
+  "archive",
+  "media",
+  "videos",
+  "slides",
+]);
+
+// Local mirror of dashboard junk buckets (avoid circular import).
+const EXCLUDED_DASHBOARD_DEPT = new Set(["other", "unknown", "general", "total", ""]);
+
+function isJunkDeptFolderLabel(label: string): boolean {
+  const key = label.trim().toLowerCase();
+  if (!key || JUNK_DEPT_FOLDER_NAMES.has(key)) return true;
+  if (/^v\d+(\.\d+)?$/i.test(key)) return true;
+  if (EXCLUDED_DASHBOARD_DEPT.has(key)) return true;
+  // File names are not department folders.
+  if (/\.(docx?|pdf|xlsx?|pptx?|zip|mp4|webm)$/i.test(key)) return true;
+  return false;
+}
+
+function isLikelySopDocumentFolder(segment: string): boolean {
+  return Boolean(
+    extractSopCodeFromSegment(segment) || pickBestSopIdentifierFromText(segment),
+  );
+}
+
+function matchKnownDepartment(label: string, knownDepartments?: string[]): string | null {
+  if (!knownDepartments?.length || !label.trim()) return null;
+  const key = label.trim().toLowerCase();
+  return knownDepartments.find((d) => d.trim().toLowerCase() === key) ?? null;
+}
+
 export function departmentFromIdentifier(identifier: string): string | null {
   const code = identifier.trim().toUpperCase().replace(/_/g, "-");
   if (!code) return null;
@@ -1635,11 +1751,19 @@ export function departmentFromIdentifier(identifier: string): string | null {
   return null;
 }
 
-export function departmentFromRelativePath(relativePath: string): string | null {
+export function departmentFromRelativePath(
+  relativePath: string,
+  knownDepartments?: string[],
+): string | null {
   const segments = relativePath.split(/[/\\]/).filter(Boolean);
   for (const segment of segments) {
-    const direct = normalizeFolderDepartment(segment);
+    const label = cleanDeptFolderLabel(segment);
+
+    const direct = normalizeFolderDepartment(segment) ?? normalizeFolderDepartment(label);
     if (direct && direct !== "General") return direct;
+
+    const known = matchKnownDepartment(label, knownDepartments);
+    if (known) return known;
 
     const folderLabel = segment.split(/\s*[-–]\s*/)[0]?.trim() ?? segment;
     const fromCode = departmentFromIdentifier(folderLabel);
@@ -1652,6 +1776,11 @@ export function departmentFromRelativePath(relativePath: string): string | null 
     if (/\bstore\b/i.test(segment)) return "Store";
     if (/engineering|maintenance/i.test(segment)) return "Engineering and Maintenance";
     if (/personnel/i.test(segment)) return "Personnel";
+
+    // Custom department folders (e.g. abcd/SOP-file.docx) — use the exact folder name.
+    if (!isLikelySopDocumentFolder(segment) && !isJunkDeptFolderLabel(label) && label.length >= 2) {
+      return label;
+    }
   }
 
   return null;
@@ -1661,14 +1790,32 @@ export function resolveDepartmentFromUpload(opts: {
   relativePath?: string;
   identifier?: string;
   batchOverride?: string;
+  /** DEPARTMENT value extracted from the SOP document header. */
+  contentDepartment?: string;
+  /** Persisted / dashboard department names — preserves exact casing for custom depts. */
+  knownDepartments?: string[];
 }): string {
   if (opts.batchOverride?.trim()) {
     const override = opts.batchOverride.trim();
-    return FOLDER_DEPARTMENT_ALIASES[override.toLowerCase()] ?? override;
+    const aliased = FOLDER_DEPARTMENT_ALIASES[override.toLowerCase()];
+    if (aliased) return aliased;
+    const known = matchKnownDepartment(override, opts.knownDepartments);
+    if (known) return known;
+    return override;
+  }
+
+  // Prefer the department written inside the document over path/code heuristics.
+  if (opts.contentDepartment?.trim()) {
+    const fromDoc = opts.contentDepartment.trim();
+    const aliased = FOLDER_DEPARTMENT_ALIASES[fromDoc.toLowerCase()];
+    if (aliased) return aliased;
+    const known = matchKnownDepartment(fromDoc, opts.knownDepartments);
+    if (known) return known;
+    return fromDoc;
   }
 
   if (opts.relativePath) {
-    const fromPath = departmentFromRelativePath(opts.relativePath);
+    const fromPath = departmentFromRelativePath(opts.relativePath, opts.knownDepartments);
     if (fromPath) return fromPath;
   }
 
@@ -1693,15 +1840,29 @@ export function fileUrlToRelativePath(fileUrl?: string): string | undefined {
   }
 }
 
-/** Re-resolve department for records already in the database (identifier takes priority). */
-export function resolveDepartmentForExistingSop(sop: {
-  identifier: string;
-  folderPath?: string;
-  fileUrl?: string;
-  originalFileName?: string;
-  deptManualOverride?: boolean;
-}): string | null {
+/** Re-resolve department for records already in the database. */
+export function resolveDepartmentForExistingSop(
+  sop: {
+    identifier: string;
+    folderPath?: string;
+    fileUrl?: string;
+    originalFileName?: string;
+    deptManualOverride?: boolean;
+    /** Pre-extracted DEPARTMENT header value (from document content). */
+    contentDepartment?: string;
+  },
+  knownDepartments?: string[],
+): string | null {
   if (sop.deptManualOverride) return null;
+
+  if (sop.contentDepartment?.trim()) {
+    const raw = sop.contentDepartment.trim();
+    const aliased = FOLDER_DEPARTMENT_ALIASES[raw.toLowerCase()];
+    if (aliased) return aliased;
+    const known = matchKnownDepartment(raw, knownDepartments);
+    if (known) return known;
+    return raw;
+  }
 
   const fromId = departmentFromIdentifier(sop.identifier);
   if (fromId) return fromId;
@@ -1713,7 +1874,7 @@ export function resolveDepartmentForExistingSop(sop: {
   ].filter(Boolean) as string[];
 
   for (const candidate of pathCandidates) {
-    const fromPath = departmentFromRelativePath(candidate);
+    const fromPath = departmentFromRelativePath(candidate, knownDepartments);
     if (fromPath && fromPath !== "General") return fromPath;
   }
 

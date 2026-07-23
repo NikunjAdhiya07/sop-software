@@ -261,7 +261,15 @@ async function runCodexExecPrompt(
     }
 
     const timer = setTimeout(() => {
-      proc.kill();
+      try {
+        if (process.platform === "win32" && proc.pid) {
+          spawn("taskkill", ["/F", "/T", "/PID", String(proc.pid)], { shell: true, stdio: "ignore" });
+        } else {
+          proc.kill();
+        }
+      } catch {
+        /* ignore */
+      }
       finish(() =>
         reject(
           new Error(

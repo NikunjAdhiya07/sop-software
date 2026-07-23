@@ -10,6 +10,7 @@ import {
   reviveRegistryGroup,
   sopFamilyIdentifierRegex,
 } from "@/lib/sop-utils";
+import { clearImportStateAfterPermanentDelete } from "@/lib/sop-files-import";
 import { invalidateDashboardSopsCache } from "@/lib/server-cache";
 import { markMcqBanksObsoleteForIdentifier, reviveMcqBanksForIdentifier } from "@/lib/mcq-bank-sync";
 import { requireAuth } from "@/lib/withAuth";
@@ -125,6 +126,26 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
           { status: 403 },
         );
       }
+
+      const identifiers = [...new Set(group.map((r) => r.identifier).filter(Boolean))];
+      const checksums = [
+        ...new Set(
+          group.flatMap((r) => {
+            const docs = Array.isArray(r.sopDocuments) ? r.sopDocuments : [];
+            return [
+              r.checksum,
+              ...docs.map((d: { checksum?: string }) => d?.checksum),
+            ].filter((c): c is string => Boolean(c));
+          }),
+        ),
+      ];
+
+      try {
+        await clearImportStateAfterPermanentDelete({ identifiers, checksums });
+      } catch (err) {
+        console.warn("[permanent-delete] import-state cleanup failed:", err);
+      }
+
       await deleteRegistryGroup(group);
       invalidateDashboardSopsCache();
       return NextResponse.json({ success: true, deleted: true, identifier: group[0].identifier });

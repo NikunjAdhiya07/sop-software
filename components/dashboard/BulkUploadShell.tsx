@@ -154,6 +154,7 @@ export type SopUploadResult = {
   success: boolean;
   error?: string;
   identifier?: string;
+  id?: string;
   headerDateError?: boolean;
   headerDateErrors?: string[];
 };

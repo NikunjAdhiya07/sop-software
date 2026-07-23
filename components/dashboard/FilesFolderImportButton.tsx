@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { FileText, FolderInput, Loader2, Paperclip, History } from "lucide-react";
 import { Btn, Modal } from "./ui";
 import { useDashboardStore } from "@/lib/store/dashboard-store";
+import { PostUploadPipelineModal } from "./PostUploadPipelineModal";
 
 type ImportScope = "main" | "annexure" | "prior";
 
@@ -30,11 +31,19 @@ type ImportJob = {
   phase: string;
   percent: number;
   totals: Record<string, number>;
-  files?: Array<{ relativePath: string; fileName: string; status: string; message?: string }>;
+  files?: Array<{
+    relativePath: string;
+    fileName: string;
+    status: string;
+    message?: string;
+    identifier?: string;
+  }>;
   error?: string;
 };
 
 type ModalPhase = "select" | "scanning" | "preview" | "importing" | "done" | "error";
+
+const ALL_SCOPES: ImportScope[] = ["main", "annexure", "prior"];
 
 const SCOPE_OPTIONS: Array<{
   id: ImportScope;
@@ -61,6 +70,11 @@ const SCOPE_OPTIONS: Array<{
     icon: <History className="h-4 w-4 text-amber-600" />,
   },
 ];
+
+/** Empty selection → scan everything and let the preview report what’s pending. */
+function resolveScopes(scopes: ImportScope[]): ImportScope[] {
+  return scopes.length ? scopes : [...ALL_SCOPES];
+}
 
 function scopeQuery(scopes: ImportScope[]): string {
   return scopes.join(",");
@@ -93,6 +107,8 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
   const [running, setRunning] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<ImportJob | null>(null);
+  const [pipelineIds, setPipelineIds] = useState<string[]>([]);
+  const [pipelineOpen, setPipelineOpen] = useState(false);
 
   const toggleScope = (scope: ImportScope) => {
     setSelectedScopes((prev) =>
@@ -102,14 +118,14 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
 
   const loadPreview = useCallback(
     async (scopes: ImportScope[], parent: string, opts?: { silent?: boolean }) => {
-      if (!scopes.length) return;
+      const resolved = resolveScopes(scopes);
       if (!opts?.silent) {
         setModalPhase("scanning");
         setScanError("");
         setPreview(null);
       }
       try {
-        const res = await fetch(previewUrl(scopes, parent));
+        const res = await fetch(previewUrl(resolved, parent));
         const data = await res.json();
         if (!res.ok) {
           if (!opts?.silent) {
@@ -130,7 +146,9 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
     [],
   );
 
-  const annexureScope = selectedScopes.includes("annexure");
+  const effectiveScopes = resolveScopes(selectedScopes);
+  const autoDetect = selectedScopes.length === 0;
+  const annexureScope = effectiveScopes.includes("annexure");
   const needsParent =
     annexureScope && (preview?.unresolvedAnnexures ?? 0) > 0 && !parentSop.trim();
   const parentMissing =
@@ -162,7 +180,6 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
   };
 
   const startScan = () => {
-    if (!selectedScopes.length) return;
     setScanError("");
     void loadPreview(selectedScopes, parentSop);
   };
@@ -179,7 +196,7 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
           setRunning(false);
           setJobId(null);
           setModalPhase(data.job.status === "failed" ? "error" : "done");
-          if (selectedScopes.length) void loadPreview(selectedScopes, parentSop, { silent: true });
+          void loadPreview(selectedScopes, parentSop, { silent: true });
           onComplete?.();
           if (data.job.status === "failed") {
             setScanError(data.job.error ?? "Import failed");
@@ -189,6 +206,17 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
               `Imported ${t.imported} file(s): ${t.annexures ?? 0} annexures, ` +
                 `${t.skipped ?? 0} skipped, ${t.failed ?? 0} failed`,
             );
+            const importedIds = [
+              ...new Set(
+                ((data.job.files ?? []) as Array<{ status: string; identifier?: string }>)
+                  .filter((f) => f.status === "imported" && f.identifier)
+                  .map((f) => f.identifier as string),
+              ),
+            ];
+            if (importedIds.length && (t.imported ?? 0) > 0) {
+              setPipelineIds(importedIds);
+              setPipelineOpen(true);
+            }
           }
         }
       } catch {
@@ -201,13 +229,13 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
   }, [jobId, running, loadPreview, onComplete, showToast, selectedScopes, parentSop]);
 
   const runImport = async () => {
-    if (running || !canImport || !selectedScopes.length) return;
+    if (running || !canImport) return;
     setRunning(true);
     setModalPhase("importing");
     setScanError("");
     try {
       const body: { scopes: ImportScope[]; parentIdentifier?: string } = {
-        scopes: selectedScopes,
+        scopes: preview?.scopes?.length ? preview.scopes : effectiveScopes,
       };
       const parent = parentSop.trim();
       if (parent) body.parentIdentifier = parent;
@@ -257,8 +285,8 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
           {modalPhase === "select" && (
             <>
               <p className="text-[10px] leading-snug text-slate-600">
-                What did you add to <span className="font-mono font-semibold">files/</span>? Only
-                that category is scanned — much faster than checking everything.
+                What did you add to <span className="font-mono font-semibold">files/</span>? Pick a
+                category for a faster scan, or leave all unchecked to auto-detect everything pending.
               </p>
               <div className="space-y-2">
                 {SCOPE_OPTIONS.map((opt) => {
@@ -317,10 +345,12 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
               <Loader2 className="h-4 w-4 shrink-0 animate-spin text-emerald-600" />
               <div>
                 <p className="font-semibold text-slate-800">
-                  Scanning {scopeLabel(selectedScopes)}…
+                  Scanning {scopeLabel(effectiveScopes)}…
                 </p>
                 <p className="mt-0.5 text-[10px] text-slate-500">
-                  Checking only the selected categories against the database.
+                  {autoDetect
+                    ? "Detecting new SOPs, annexures, and prior versions only — known files are skipped."
+                    : "Checking selected categories for new files only."}
                 </p>
               </div>
             </div>
@@ -342,13 +372,13 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
               <div className="rounded border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-[10px] text-emerald-900">
                 {preview.scopes.includes("main") && (
                   <>
-                    <span className="font-semibold">{preview.pendingMain}</span> SOPs
+                    <span className="font-semibold">{preview.pendingMain}</span> new SOPs
                   </>
                 )}
                 {preview.scopes.includes("main") && preview.scopes.includes("annexure") && ", "}
                 {preview.scopes.includes("annexure") && (
                   <>
-                    <span className="font-semibold">{preview.pendingAnnexure}</span> annexures
+                    <span className="font-semibold">{preview.pendingAnnexure}</span> new annexures
                   </>
                 )}
                 {(preview.scopes.includes("main") || preview.scopes.includes("annexure")) &&
@@ -356,11 +386,11 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
                   ", "}
                 {preview.scopes.includes("prior") && (
                   <>
-                    <span className="font-semibold">{preview.pendingPrior}</span> prior versions
+                    <span className="font-semibold">{preview.pendingPrior}</span> new prior versions
                   </>
                 )}{" "}
-                ready to import
-                {preview.pending === 0 && " — nothing new in this selection."}
+                not already in the registry
+                {preview.pending === 0 && " — nothing new to import."}
               </div>
               {needsParent && (
                 <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-900">
@@ -477,12 +507,8 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
             {modalPhase === "select" && (
               <>
                 <Btn onClick={closeModal}>Cancel</Btn>
-                <Btn
-                  variant="primary"
-                  disabled={!selectedScopes.length}
-                  onClick={startScan}
-                >
-                  Scan selected
+                <Btn variant="primary" onClick={startScan}>
+                  {autoDetect ? "Scan all" : "Scan selected"}
                 </Btn>
               </>
             )}
@@ -499,7 +525,7 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
                 </Btn>
               </>
             )}
-            {(modalPhase === "done" || modalPhase === "error") && selectedScopes.length > 0 && (
+            {(modalPhase === "done" || modalPhase === "error") && (
               <Btn onClick={() => void loadPreview(selectedScopes, parentSop)}>Rescan</Btn>
             )}
             {modalPhase !== "select" && (
@@ -510,6 +536,12 @@ export function FilesFolderImportButton({ onComplete }: { onComplete?: () => voi
           </div>
         </div>
       </Modal>
+
+      <PostUploadPipelineModal
+        open={pipelineOpen}
+        identifiers={pipelineIds}
+        onClose={() => setPipelineOpen(false)}
+      />
     </>
   );
 }

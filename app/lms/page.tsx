@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import {
   GraduationCap, LogOut, Search, PlayCircle, BookOpen, Clock,
   CheckCircle2, AlertCircle, Loader2, RefreshCw,
-  FileText, ClipboardList, TrendingUp, Award,
+  FileText, ClipboardList, TrendingUp, Award, Calendar,
   ArrowDown, ArrowUp, ChevronsUpDown,
 } from 'lucide-react';
 import {
@@ -19,6 +20,11 @@ import { hasGujaratiScript, isPlaceholderSopName, isInvalidSopAssignmentCode } f
 import { getDeptLabelClasses, normalizeDepartment } from '@/lib/department-colors';
 import type { SopAssetFlags } from '@/app/api/lms/assets/route';
 
+const LearnerTrainingCalendar = dynamic(
+  () => import('@/components/lms/LearnerTrainingCalendar'),
+  { ssr: false },
+);
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SopAssignment {
@@ -31,6 +37,7 @@ interface SopAssignment {
   year: number;
   trainingType: 'induction' | 'training';
   status?: string;
+  examDate?: string;
 }
 
 interface Employee {
@@ -121,9 +128,13 @@ function stripVersion(code: string): string {
   return String(code || '').toUpperCase().replace(/-\d+$/, '').trim();
 }
 
+function cleanDisplayText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
 function displayTrainingName(a: SopAssignment): { english: string; gujarati?: string } {
-  let english = a.sopName || a.sopCode;
-  let gujarati = a.sopNameGujarati;
+  let english = cleanDisplayText(a.sopName || a.sopCode);
+  let gujarati = a.sopNameGujarati ? cleanDisplayText(a.sopNameGujarati) : undefined;
   if (hasGujaratiScript(english) && !gujarati) {
     gujarati = english;
     english = a.sopCode;
@@ -132,6 +143,11 @@ function displayTrainingName(a: SopAssignment): { english: string; gujarati?: st
     english = gujarati || a.sopCode;
   }
   return { english, gujarati: gujarati && gujarati !== english ? gujarati : undefined };
+}
+
+/** Certificate only when training is fully done (100%), not the 90% pre-quiz cap. */
+function isFullyComplete(progress?: ProgressRecord): boolean {
+  return progress?.status === 'completed' && (progress.overallPercentage ?? 0) >= 100;
 }
 
 function statusSortRank(
@@ -172,7 +188,7 @@ function StatusIcon({
   schedule: ScheduleStatus;
 }) {
   return (
-    <div className={`mx-auto flex h-8 w-8 items-center justify-center rounded-lg ${
+    <div className={`mx-auto flex h-7 w-7 items-center justify-center rounded-md ${
       status === 'completed' ? 'bg-green-50'
         : status === 'in_progress' ? 'bg-purple-50'
         : schedule === 'overdue' ? 'bg-red-50'
@@ -180,14 +196,14 @@ function StatusIcon({
         : 'bg-sky-50'
     }`}>
       {status === 'completed'
-        ? <CheckCircle2 className="h-4 w-4 text-green-600" />
+        ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
         : status === 'in_progress'
-        ? <PlayCircle className="h-4 w-4 text-purple-600" />
+        ? <PlayCircle className="h-3.5 w-3.5 text-purple-600" />
         : schedule === 'overdue'
-        ? <AlertCircle className="h-4 w-4 text-red-500" />
+        ? <AlertCircle className="h-3.5 w-3.5 text-red-500" />
         : schedule === 'due'
-        ? <Clock className="h-4 w-4 text-amber-600" />
-        : <Clock className="h-4 w-4 text-sky-500" />}
+        ? <Clock className="h-3.5 w-3.5 text-amber-600" />
+        : <Clock className="h-3.5 w-3.5 text-sky-500" />}
     </div>
   );
 }
@@ -205,7 +221,7 @@ function SortHeader({
   return (
     <th
       onClick={() => onSort(sortKey)}
-      className={`cursor-pointer select-none px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition hover:text-gray-700 ${
+      className={`cursor-pointer select-none px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition hover:text-gray-700 ${
         active ? 'text-gray-700' : 'text-gray-500'
       } ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'}`}
     >
@@ -292,16 +308,16 @@ function ResourceButtons({
             key={d.kind}
             onClick={() => onSelect(d)}
             title={d.label}
-            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
+            className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[10px] font-semibold transition ${
               d.primary
                 ? 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100'
                 : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
             }`}
           >
-            <Icon className="h-3.5 w-3.5" />
+            <Icon className="h-3 w-3" />
             {d.label}
             {both && (
-              <span className="ml-0.5 rounded bg-indigo-50 px-1 text-[8px] font-bold text-indigo-500">EN/ગુજ</span>
+              <span className="rounded bg-indigo-50 px-0.5 text-[8px] font-bold text-indigo-500">EN/ગુજ</span>
             )}
           </button>
         );
@@ -435,12 +451,12 @@ function TrainingTable({
 
   return (
     <>
-    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1320px] border-collapse text-sm">
+        <table className="w-full min-w-[980px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-gray-200 bg-gray-50">
-              <th className="w-12 px-3 py-2.5 text-center text-[11px] font-semibold uppercase tracking-wider text-gray-500" />
+              <th className="w-9 px-2 py-1.5 text-center text-[10px] font-semibold uppercase tracking-wider text-gray-500" />
               <SortHeader label="SOP Code" sortKey="sopCode" sort={sort} onSort={(k) => setSort((p) => nextSort(p, k))} />
               <SortHeader label="Training Name" sortKey="sopName" sort={sort} onSort={(k) => setSort((p) => nextSort(p, k))} />
               <SortHeader label="Dept" sortKey="department" sort={sort} onSort={(k) => setSort((p) => nextSort(p, k))} />
@@ -448,7 +464,7 @@ function TrainingTable({
               <SortHeader label="Status" sortKey="status" sort={sort} onSort={(k) => setSort((p) => nextSort(p, k))} />
               <SortHeader label="Due" sortKey="due" sort={sort} onSort={(k) => setSort((p) => nextSort(p, k))} />
               <SortHeader label="Progress" sortKey="progress" sort={sort} onSort={(k) => setSort((p) => nextSort(p, k))} />
-              <th className="w-80 whitespace-nowrap px-3 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-500">Action</th>
+              <th className="whitespace-nowrap px-2 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-500">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -458,7 +474,7 @@ function TrainingTable({
               const status = progress?.status ?? 'not_started';
               const schedule = scheduleStatus(assignment);
               const cert = certMap.get(assignment.sopCode) || certMap.get(stripVersion(assignment.sopCode));
-              const showCertificate = status === 'completed' && Boolean(cert);
+              const showCertificate = isFullyComplete(progress) && Boolean(cert);
 
               return (
                 <tr
@@ -474,30 +490,30 @@ function TrainingTable({
                       : ''
                   }`}
                 >
-                  <td className="px-3 py-2.5">
+                  <td className="px-2 py-1.5">
                     <StatusIcon status={status} schedule={schedule} />
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs font-bold text-gray-700">
+                  <td className="whitespace-nowrap px-2 py-1.5 font-mono text-xs font-bold text-gray-700">
                     {assignment.sopCode}
                   </td>
-                  <td className="max-w-[260px] px-3 py-2.5">
+                  <td className="max-w-[220px] px-2 py-1.5">
                     <TrainingNameCell assignment={assignment} />
                     {progress?.lastAccessedAt && status === 'in_progress' && (
-                      <p className="mt-0.5 truncate text-[11px] text-gray-400">
+                      <p className="mt-0.5 truncate text-[10px] text-gray-400">
                         Last opened {new Date(progress.lastAccessedAt).toLocaleDateString()}
                       </p>
                     )}
-                    {status === 'completed' && progress?.completedAt && (
-                      <p className="mt-0.5 truncate text-[11px] text-gray-400">
+                    {isFullyComplete(progress) && progress?.completedAt && (
+                      <p className="mt-0.5 truncate text-[10px] text-gray-400">
                         Completed {new Date(progress.completedAt).toLocaleDateString()}
                       </p>
                     )}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2.5">
+                  <td className="whitespace-nowrap px-2 py-1.5">
                     <DepartmentCell department={assignment.sopDepartment} />
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2.5">
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  <td className="whitespace-nowrap px-2 py-1.5">
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
                       assignment.trainingType === 'induction'
                         ? 'bg-orange-100 text-orange-700'
                         : 'bg-sky-100 text-sky-700'
@@ -505,9 +521,9 @@ function TrainingTable({
                       {assignment.trainingType === 'induction' ? 'Induction' : 'Training'}
                     </span>
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2.5">
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      status === 'completed'
+                  <td className="whitespace-nowrap px-2 py-1.5">
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                      isFullyComplete(progress)
                         ? 'bg-green-100 text-green-700'
                         : status === 'in_progress'
                         ? 'bg-purple-100 text-purple-700'
@@ -519,31 +535,33 @@ function TrainingTable({
                         ? 'bg-red-100 text-red-700'
                         : 'bg-gray-100 text-gray-600'
                     }`}>
-                      {trainingStatusLabel(status, schedule)}
+                      {trainingStatusLabel(isFullyComplete(progress) ? 'completed' : status, schedule)}
                     </span>
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2.5">
+                  <td className="whitespace-nowrap px-2 py-1.5">
                     <span className={`text-xs ${schedule === 'upcoming' ? 'text-gray-400' : 'text-gray-500'}`}>
-                      {assignment.monthName.slice(0, 3)} {assignment.year}
+                      {assignment.examDate
+                        ? new Date(assignment.examDate + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+                        : `${assignment.monthName.slice(0, 3)} ${assignment.year}`}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5">
-                    <div className="flex items-center gap-2">
+                  <td className="px-2 py-1.5">
+                    <div className="flex items-center gap-1.5">
                       <ProgressBar
                         pct={pct}
                         color={
-                          status === 'completed' ? 'green'
+                          isFullyComplete(progress) ? 'green'
                             : schedule === 'overdue' ? 'amber'
                             : schedule === 'due' ? 'amber'
                             : schedule === 'upcoming' ? 'sky'
                             : 'purple'
                         }
                       />
-                      <span className="w-9 shrink-0 text-right text-[11px] font-semibold text-gray-400">{pct}%</span>
+                      <span className="w-8 shrink-0 text-right text-[10px] font-semibold text-gray-400">{pct}%</span>
                     </div>
                   </td>
-                  <td className="px-3 py-2.5 text-right">
-                    <div className="flex flex-nowrap items-center justify-end gap-1.5">
+                  <td className="px-2 py-1.5 text-right">
+                    <div className="flex flex-nowrap items-center justify-end gap-1">
                       {assetsMap[assignment.sopCode] && (
                         <ResourceButtons
                           asset={assetsMap[assignment.sopCode]}
@@ -553,11 +571,11 @@ function TrainingTable({
                       {showCertificate && (
                         <button
                           onClick={() => onCertificate(cert!.sopCode)}
-                          className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-100"
+                          className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100"
                           title="View certificate"
                         >
                           <Award className="h-3.5 w-3.5" />
-                          Certificate
+                          Cert
                         </button>
                       )}
                     </div>
@@ -605,12 +623,12 @@ function ContinueLearning({
   if (inProgress.length === 0) return null;
 
   return (
-    <section className="mb-6">
-      <div className="mb-3 flex items-center gap-2">
-        <PlayCircle className="h-4 w-4 text-purple-600" />
-        <h2 className="text-sm font-bold text-gray-800">Continue Learning</h2>
+    <section className="mb-4">
+      <div className="mb-2 flex items-center gap-1.5">
+        <PlayCircle className="h-3.5 w-3.5 text-purple-600" />
+        <h2 className="text-xs font-bold text-gray-800">Continue Learning</h2>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {inProgress.map((a) => {
           const p = progressMap.get(a.sopCode)!;
           return (
@@ -619,20 +637,20 @@ function ContinueLearning({
               onClick={() => onOpen(a.sopCode)}
               onMouseEnter={() => onPrefetch?.(a.sopCode)}
               onFocus={() => onPrefetch?.(a.sopCode)}
-              className="group relative overflow-hidden rounded-xl border border-purple-200 bg-linear-to-br from-purple-50 to-white p-4 text-left shadow-sm transition hover:shadow-md hover:border-purple-400"
+              className="group relative overflow-hidden rounded-lg border border-purple-200 bg-linear-to-br from-purple-50 to-white p-3 text-left transition hover:border-purple-400"
             >
-              <div className="mb-2 flex items-start justify-between gap-2">
-                <div>
-                  <p className="font-mono text-xs font-bold text-purple-700">{a.sopCode}</p>
-                  <p className="mt-0.5 text-sm font-semibold text-gray-800 line-clamp-2">{a.sopName || a.sopCode}</p>
+              <div className="mb-1.5 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-mono text-[11px] font-bold text-purple-700">{a.sopCode}</p>
+                  <p className="mt-0.5 truncate text-xs font-semibold text-gray-800">{cleanDisplayText(a.sopName || a.sopCode)}</p>
                 </div>
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-600 text-white shadow">
-                  <PlayCircle className="h-4 w-4" />
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-purple-600 text-white">
+                  <PlayCircle className="h-3.5 w-3.5" />
                 </div>
               </div>
               <ProgressBar pct={p.overallPercentage} />
-              <div className="mt-1.5 flex items-center justify-between text-[11px] text-gray-400">
-                <span>Resume from where you left off</span>
+              <div className="mt-1 flex items-center justify-between text-[10px] text-gray-400">
+                <span>Resume</span>
                 <span className="font-semibold text-purple-600">{p.overallPercentage}%</span>
               </div>
             </button>
@@ -648,35 +666,52 @@ function ContinueLearning({
 function StatsRow({
   assignments,
   progressMap,
+  activeFilter,
+  onStatClick,
 }: {
   assignments: SopAssignment[];
   progressMap: Map<string, ProgressRecord>;
+  activeFilter: FilterTab;
+  onStatClick: (filter: FilterTab) => void;
 }) {
   const total      = assignments.length;
-  const completed  = assignments.filter((a) => progressMap.get(a.sopCode)?.status === 'completed').length;
+  const completed  = assignments.filter((a) => isFullyComplete(progressMap.get(a.sopCode))).length;
   const inProgress = assignments.filter((a) => progressMap.get(a.sopCode)?.status === 'in_progress').length;
-  const overdue    = assignments.filter((a) => isOverdue(a) && progressMap.get(a.sopCode)?.status !== 'completed').length;
+  const overdue    = assignments.filter((a) => isOverdue(a) && !isFullyComplete(progressMap.get(a.sopCode))).length;
 
-  const stats = [
-    { label: 'Total Assigned', value: total,      Icon: FileText,      color: 'text-gray-600',   bg: 'bg-gray-50'   },
-    { label: 'In Progress',    value: inProgress,  Icon: TrendingUp,    color: 'text-purple-600', bg: 'bg-purple-50' },
-    { label: 'Completed',      value: completed,   Icon: CheckCircle2,  color: 'text-green-600',  bg: 'bg-green-50'  },
-    { label: 'Overdue',        value: overdue,     Icon: AlertCircle,   color: 'text-red-600',    bg: 'bg-red-50'    },
+  const stats: { label: string; value: number; filter: FilterTab; Icon: typeof FileText; color: string; bg: string; ring: string }[] = [
+    { label: 'Total Assigned', value: total,      filter: 'all',         Icon: FileText,      color: 'text-gray-600',   bg: 'bg-gray-50',    ring: 'ring-gray-400' },
+    { label: 'In Progress',    value: inProgress,  filter: 'in_progress', Icon: TrendingUp,    color: 'text-purple-600', bg: 'bg-purple-50', ring: 'ring-purple-400' },
+    { label: 'Completed',      value: completed,   filter: 'completed',   Icon: CheckCircle2,  color: 'text-green-600',  bg: 'bg-green-50',  ring: 'ring-green-400' },
+    { label: 'Overdue',        value: overdue,     filter: 'overdue',     Icon: AlertCircle,   color: 'text-red-600',    bg: 'bg-red-50',    ring: 'ring-red-400' },
   ];
 
   return (
-    <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-      {stats.map(({ label, value, Icon, color, bg }) => (
-        <div key={label} className={`flex items-center gap-4 rounded-xl border border-gray-200 ${bg} px-5 py-4`}>
-          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${bg} ring-1 ring-inset ring-gray-200`}>
-            <Icon className={`h-5 w-5 ${color}`} />
-          </div>
-          <div>
-            <p className="text-2xl font-bold text-gray-800">{value}</p>
-            <p className="text-xs text-gray-500">{label}</p>
-          </div>
-        </div>
-      ))}
+    <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {stats.map(({ label, value, filter: tab, Icon, color, bg, ring }) => {
+        const active = activeFilter === tab;
+        return (
+          <button
+            key={label}
+            type="button"
+            onClick={() => onStatClick(tab)}
+            aria-pressed={active}
+            className={`flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition hover:shadow-sm ${bg} ${
+              active
+                ? `border-transparent ring-2 ${ring}`
+                : 'border-gray-200 hover:border-gray-300'
+            }`}
+          >
+            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${bg} ring-1 ring-inset ring-gray-200`}>
+              <Icon className={`h-4 w-4 ${color}`} />
+            </div>
+            <div>
+              <p className="text-xl font-bold leading-none text-gray-800">{value}</p>
+              <p className="mt-0.5 text-[10px] text-gray-500">{label}</p>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -774,6 +809,16 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
   const [loading,  setLoading]  = useState(true);
   const [search,   setSearch]   = useState('');
   const [filter,   setFilter]   = useState<FilterTab>('all');
+  const [showCalendar, setShowCalendar] = useState(false);
+  const trainingsRef = useRef<HTMLElement>(null);
+
+  const handleStatClick = useCallback((tab: FilterTab) => {
+    setFilter(tab);
+    // Defer scroll so the filtered list has painted before we jump.
+    requestAnimationFrame(() => {
+      trainingsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
 
   const load = useCallback(async (force = false) => {
     const cached = !force ? readLmsClientCache<DashboardCache>(lmsClientFields.dashboard) : null;
@@ -869,7 +914,7 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
   const filtered = useMemo(() => {
     let list = assignments;
     if (filter === 'in_progress')  list = list.filter((a) => progressMap.get(a.sopCode)?.status === 'in_progress');
-    if (filter === 'completed')    list = list.filter((a) => progressMap.get(a.sopCode)?.status === 'completed');
+    if (filter === 'completed')    list = list.filter((a) => isFullyComplete(progressMap.get(a.sopCode)));
     if (filter === 'due')          list = list.filter((a) => {
       const st = progressMap.get(a.sopCode)?.status;
       return scheduleStatus(a) === 'due' && st !== 'completed' && st !== 'in_progress';
@@ -879,8 +924,7 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
       return scheduleStatus(a) === 'upcoming' && st !== 'completed';
     });
     if (filter === 'overdue')      list = list.filter((a) => {
-      const st = progressMap.get(a.sopCode)?.status;
-      return scheduleStatus(a) === 'overdue' && st !== 'completed';
+      return scheduleStatus(a) === 'overdue' && !isFullyComplete(progressMap.get(a.sopCode));
     });
     if (search.trim()) {
       const term = search.trim().toLowerCase();
@@ -898,10 +942,18 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
     return list;
   }, [assignments, progressMap, filter, search]);
 
+  const earnedCertificates = useMemo(
+    () => certificates.filter((c) => {
+      const p = progressMap.get(c.sopCode) || progressMap.get(stripVersion(c.sopCode));
+      return isFullyComplete(p);
+    }),
+    [certificates, progressMap],
+  );
+
   const tabCounts = useMemo(() => ({
     all:         assignments.length,
     in_progress: assignments.filter((a) => progressMap.get(a.sopCode)?.status === 'in_progress').length,
-    completed:   assignments.filter((a) => progressMap.get(a.sopCode)?.status === 'completed').length,
+    completed:   assignments.filter((a) => isFullyComplete(progressMap.get(a.sopCode))).length,
     due:         assignments.filter((a) => {
       const st = progressMap.get(a.sopCode)?.status;
       return scheduleStatus(a) === 'due' && st !== 'completed' && st !== 'in_progress';
@@ -911,8 +963,7 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
       return scheduleStatus(a) === 'upcoming' && st !== 'completed';
     }).length,
     overdue:     assignments.filter((a) => {
-      const st = progressMap.get(a.sopCode)?.status;
-      return scheduleStatus(a) === 'overdue' && st !== 'completed';
+      return scheduleStatus(a) === 'overdue' && !isFullyComplete(progressMap.get(a.sopCode));
     }).length,
   }), [assignments, progressMap]);
 
@@ -930,7 +981,14 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
               <p className="text-[11px] text-gray-400">{employee.name} · {employee.department}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowCalendar(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50 px-2.5 py-1.5 text-xs font-semibold text-purple-700 hover:bg-purple-100"
+            >
+              <Calendar className="h-3.5 w-3.5" /> Calendar
+            </button>
             <button
               onClick={() => load(true)}
               disabled={loading}
@@ -940,7 +998,7 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
             </button>
             <button
               onClick={handleSignOut}
-              className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+              className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
             >
               <LogOut className="h-3.5 w-3.5" /> Sign out
             </button>
@@ -948,43 +1006,48 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 lg:px-8">
+      <main className="mx-auto w-full max-w-screen-2xl px-3 py-4 sm:px-5 lg:px-6">
         {loading ? (
-          <div className="flex items-center justify-center py-24">
+          <div className="flex items-center justify-center py-16">
             <Loader2 className="h-8 w-8 animate-spin text-purple-400" />
           </div>
         ) : (
           <>
             {/* Stats */}
-            <StatsRow assignments={assignments} progressMap={progressMap} />
+            <StatsRow
+              assignments={assignments}
+              progressMap={progressMap}
+              activeFilter={filter}
+              onStatClick={handleStatClick}
+            />
 
             {/* Continue learning */}
             <ContinueLearning assignments={assignments} progressMap={progressMap} onOpen={handleOpen} onPrefetch={prefetchJourney} />
 
-            {/* Certificates */}
-            {certificates.length > 0 && (
-              <section className="mb-6">
-                <div className="mb-3 flex items-center gap-2">
-                  <Award className="h-4 w-4 text-amber-500" />
-                  <h2 className="text-sm font-bold text-gray-800">My Certificates</h2>
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
-                    {certificates.length}
+            {/* Certificates — only for fully completed (100%) trainings */}
+            {earnedCertificates.length > 0 && (
+              <section className="mb-4">
+                <div className="mb-2 flex items-center gap-1.5">
+                  <Award className="h-3.5 w-3.5 text-amber-500" />
+                  <h2 className="text-xs font-bold text-gray-800">My Certificates</h2>
+                  <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                    {earnedCertificates.length}
                   </span>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {certificates.map((cert) => (
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {earnedCertificates.map((cert) => (
                     <button
                       key={cert._id}
                       onClick={() => router.push(`/lms/certificate/${cert.sopCode}`)}
-                      className="flex items-start gap-3 rounded-xl border border-amber-200 bg-linear-to-br from-amber-50 to-white p-4 text-left shadow-sm transition hover:shadow-md hover:border-amber-400"
+                      className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-linear-to-br from-amber-50 to-white p-3 text-left transition hover:border-amber-400"
                     >
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-100">
-                        <Award className="h-5 w-5 text-amber-600" />
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-amber-100">
+                        <Award className="h-4 w-4 text-amber-600" />
                       </div>
                       <div className="min-w-0">
-                        <p className="font-mono text-xs font-bold text-amber-700">{cert.sopCode}</p>
-                        <p className="truncate text-sm font-semibold text-gray-800">{cert.sopName}</p>
-                        <p className="mt-0.5 text-[11px] text-gray-400">
+                        <p className="font-mono text-[11px] font-bold text-amber-700">{cert.sopCode}</p>
+                        <p className="truncate text-xs font-semibold text-gray-800">{cleanDisplayText(cert.sopName)}</p>
+                        <p className="mt-0.5 text-[10px] text-gray-400">
                           {new Date(cert.completedAt).toLocaleDateString()}
                           {cert.quizScore > 0 && ` · Score: ${cert.quizScore}%`}
                         </p>
@@ -996,10 +1059,10 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
             )}
 
             {/* My Trainings section */}
-            <section>
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="flex items-center gap-2 text-sm font-bold text-gray-800">
-                  <ClipboardList className="h-4 w-4 text-purple-600" /> My Trainings
+            <section ref={trainingsRef} className="scroll-mt-16">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="flex items-center gap-1.5 text-xs font-bold text-gray-800">
+                  <ClipboardList className="h-3.5 w-3.5 text-purple-600" /> My Trainings
                 </h2>
                 <div className="relative w-full max-w-xs">
                   <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
@@ -1007,18 +1070,18 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder="Search SOP code or name…"
-                    className="w-full rounded-lg border border-gray-200 py-2 pl-8 pr-3 text-sm focus:border-purple-300 focus:outline-none"
+                    className="w-full rounded-lg border border-gray-200 py-1.5 pl-8 pr-3 text-sm focus:border-purple-300 focus:outline-none"
                   />
                 </div>
               </div>
 
               {/* Filter tabs */}
-              <div className="mb-4 flex flex-wrap gap-1.5">
+              <div className="mb-2.5 flex flex-wrap gap-1">
                 {(['all', 'in_progress', 'due', 'upcoming', 'completed', 'overdue'] as FilterTab[]).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setFilter(tab)}
-                    className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                    className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
                       filter === tab
                         ? tab === 'overdue'
                           ? 'bg-red-600 text-white'
@@ -1033,7 +1096,7 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
                     }`}
                   >
                     {statusLabel(tab)}
-                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                    <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
                       filter === tab ? 'bg-white/20' : 'bg-gray-100 text-gray-500'
                     }`}>
                       {tabCounts[tab]}
@@ -1069,9 +1132,9 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
 
             {/* Overdue warning */}
             {tabCounts.overdue > 0 && (
-              <div className="mt-6 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                <p className="text-xs text-amber-800">
+              <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                <p className="text-[11px] text-amber-800">
                   You have <strong>{tabCounts.overdue} overdue</strong> training{tabCounts.overdue !== 1 ? 's' : ''}.
                   Please complete them as soon as possible to remain compliant.
                 </p>
@@ -1080,6 +1143,15 @@ function Dashboard({ employee, onLogout }: { employee: Employee; onLogout: () =>
           </>
         )}
       </main>
+
+      {showCalendar && (
+        <LearnerTrainingCalendar
+          assignments={assignments}
+          progressMap={progressMap}
+          onOpen={handleOpen}
+          onClose={() => setShowCalendar(false)}
+        />
+      )}
     </div>
   );
 }

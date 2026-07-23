@@ -79,9 +79,9 @@ async function buildSopScheduleByDept(): Promise<Map<string, Map<string, number[
 }
 
 /** Per training-component completion state for a single SOP. */
-export type ComponentStatus = 'completed' | 'partial' | 'not_completed' | 'na';
+export type ComponentStatus = 'completed' | 'not_completed' | 'na';
 /** Roll-up completion state for a single assigned SOP. */
-export type SopStatus = 'completed' | 'partial' | 'not_completed';
+export type SopStatus = 'completed' | 'not_completed';
 
 // Which raw progress step keys feed each component column shown to the admin.
 const COMPONENT_GROUPS = {
@@ -116,13 +116,12 @@ export interface EmployeeTrainingRecord {
   isActive: boolean;
   totalSops: number;
   completedSops: number;
-  partialSops: number;
   notCompletedSops: number;
   overallPct: number;
   /** Count of assigned SOPs per month, index 0 = Jan … 11 = Dec. */
   monthlyCounts: number[];
   /** Status breakdown per month for the employee grid. */
-  monthlyBreakdown: Array<{ completed: number; partial: number; notCompleted: number }>;
+  monthlyBreakdown: Array<{ completed: number; notCompleted: number }>;
   sops: SopBreakdown[];
   /** Employee has at least one regular training SOP assigned. */
   hasTraining: boolean;
@@ -150,15 +149,13 @@ function componentStatus(
   const present = groupSteps.filter((s) => availableSet.has(s));
   if (present.length === 0) return 'na'; // SOP has no material of this kind
   const done = present.filter((s) => isStepDone(steps, s)).length;
-  if (done === 0) return 'not_completed';
   if (done === present.length) return 'completed';
-  return 'partial';
+  return 'not_completed';
 }
 
 function buildMonthlyBreakdown(sops: SopBreakdown[]) {
   const breakdown = Array.from({ length: 12 }, () => ({
     completed: 0,
-    partial: 0,
     notCompleted: 0,
   }));
   for (const sop of sops) {
@@ -166,7 +163,6 @@ function buildMonthlyBreakdown(sops: SopBreakdown[]) {
       const idx = m - 1;
       if (idx < 0 || idx > 11) continue;
       if (sop.status === 'completed') breakdown[idx].completed++;
-      else if (sop.status === 'partial') breakdown[idx].partial++;
       else breakdown[idx].notCompleted++;
     }
   }
@@ -291,7 +287,6 @@ export async function GET(req: NextRequest) {
           const assignments = assignmentsMap.get(empKey(emp.department, emp.name)) ?? [];
 
           let completedSops = 0;
-          let partialSops = 0;
           let notCompletedSops = 0;
           let totalSteps = 0;
           let doneSteps = 0;
@@ -320,12 +315,10 @@ export async function GET(req: NextRequest) {
             doneSteps += doneCount;
 
             let status: SopStatus;
-            if (available.length === 0 || doneCount === 0) status = 'not_completed';
-            else if (doneCount === available.length) status = 'completed';
-            else status = 'partial';
+            if (available.length > 0 && doneCount === available.length) status = 'completed';
+            else status = 'not_completed';
 
             if (status === 'completed') completedSops++;
-            else if (status === 'partial') partialSops++;
             else notCompletedSops++;
 
             const components = Object.fromEntries(
@@ -359,7 +352,6 @@ export async function GET(req: NextRequest) {
             isActive:         emp.isActive,
             totalSops:        sops.length,
             completedSops,
-            partialSops,
             notCompletedSops,
             overallPct,
             monthlyCounts,

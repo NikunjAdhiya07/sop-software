@@ -5,6 +5,7 @@ import InductionTrainingMatrixUpload from '@/models/InductionTrainingMatrixUploa
 import Employee from '@/models/Employee';
 import SOP, { type ISOP } from '@/models/SOP';
 import MatrixSOPAssignment from '@/models/MatrixSOPAssignment';
+import TrainingExamSchedule from '@/models/TrainingExamSchedule';
 import { getGroupedRegistryRows } from '@/lib/dashboardRegistrySource';
 import { normalizeDepartment } from '@/lib/department-colors';
 import { baseIdentifierFromIdentifier } from '@/lib/sop-utils';
@@ -21,6 +22,12 @@ import {
   cleanSopDisplayName,
   isInvalidSopAssignmentCode,
 } from '@/lib/sop-name-resolution';
+import {
+  normalizeDept,
+  toDateOnlyIso,
+  deptScheduleKey,
+  employeeOverrideKey,
+} from '@/lib/trainingExamSchedule';
 
 const MONTH_NAMES = [
   '',
@@ -48,6 +55,8 @@ export interface EmployeeSopAssignment {
   year: number;
   trainingType: 'induction' | 'training';
   status?: string;
+  /** ISO date (YYYY-MM-DD) when the exam is scheduled, if assigned on the calendar. */
+  examDate?: string;
 }
 
 function empKey(department: string, name: string): string {
@@ -473,8 +482,71 @@ async function computeEmployeeAssignmentsMap(): Promise<Map<string, EmployeeSopA
   }
 
   await mergeInductionAssignments(map, lookup);
+  await attachExamDates(map);
 
   return map;
+}
+
+/**
+ * Attach calendar exam dates: employee override wins, else department schedule
+ * for the assignment's month/year.
+ */
+async function attachExamDates(
+  map: Map<string, EmployeeSopAssignment[]>,
+): Promise<void> {
+  const schedules = await TrainingExamSchedule.find({
+    status: { $ne: 'cancelled' },
+  })
+    .select('sopCode department year plannedMonth examDate scope employeeName')
+    .lean();
+
+  if (!schedules.length) return;
+
+  const deptByKey = new Map<string, string>();
+  const overrideByKey = new Map<string, string>();
+
+  for (const s of schedules) {
+    const examDate =
+      s.examDate instanceof Date
+        ? toDateOnlyIso(s.examDate)
+        : toDateOnlyIso(new Date(s.examDate as unknown as string));
+    if (s.scope === 'department') {
+      deptByKey.set(
+        deptScheduleKey(s.sopCode, s.department, s.year, s.plannedMonth),
+        examDate,
+      );
+    } else if (s.scope === 'employee' && s.employeeName) {
+      overrideByKey.set(
+        employeeOverrideKey(
+          s.sopCode,
+          s.department,
+          s.year,
+          s.plannedMonth,
+          s.employeeName,
+        ),
+        examDate,
+      );
+    }
+  }
+
+  for (const [key, list] of map) {
+    const [deptRaw, ...nameParts] = key.split('||');
+    const department = normalizeDept(deptRaw || '');
+    const employeeName = nameParts.join('||').trim();
+    for (const a of list) {
+      const code = stripVersion(a.sopCode);
+      const oKey = employeeOverrideKey(
+        code,
+        department,
+        a.year,
+        a.month,
+        employeeName,
+      );
+      const dKey = deptScheduleKey(code, department, a.year, a.month);
+      const examDate = overrideByKey.get(oKey) || deptByKey.get(dKey);
+      if (examDate) a.examDate = examDate;
+    }
+  }
 }
 
 async function mergeInductionAssignments(

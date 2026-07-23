@@ -19,6 +19,7 @@ const SERVER_TTL_MS = {
   adminEmployeeTraining: 2 * 60_000,
   adminMeta: 5 * 60_000,
   adminExamSettings: 2 * 60_000,
+  adminSopExamSettings: 2 * 60_000,
   certificate: 5 * 60_000,
 } as const;
 
@@ -149,9 +150,11 @@ export const lmsServerKeys = {
   journey: (employeeId: string, sopCode: string) => `lms:journey:${employeeId}:${sopCode}`,
   journeyContent: (sopCode: string) => `lms:journey-content:${sopCode.toUpperCase()}`,
   adminTrainingStatus: (department: string) => `lms:admin:training-status:v2:${department || 'all'}`,
-  adminEmployeeTraining: (department: string) => `lms:admin:employee-training:v3:${department || 'all'}`,
-  adminMeta: () => 'lms:admin:meta',
+  adminEmployeeTraining: (department: string) => `lms:admin:employee-training:v4:${department || 'all'}`,
+  adminMeta: () => 'lms:admin:meta:v2',
+  adminMetaForSop: (sopCode: string) => `lms:admin:meta:sop:v2:${sopCode.toUpperCase()}`,
   adminExamSettings: () => 'lms:admin:exam-settings',
+  adminSopExamSettings: () => 'lms:admin:sop-exam-settings:v3',
 } as const;
 
 export const lmsServerTtl = SERVER_TTL_MS;
@@ -215,9 +218,11 @@ export const lmsClientFields = {
   journey: (sopCode: string) => `journey:${sopCode}`,
   certificate: (sopCode: string) => `certificate:${sopCode}`,
   adminTrainingStatus: (dept: string) => `admin:training-status:${dept || 'all'}`,
-  adminEmployeeTraining: (dept: string) => `admin:employee-training:${dept || 'all'}`,
-  adminMeta: 'admin:meta',
+  adminEmployeeTraining: (dept: string) => `admin:employee-training:v2:${dept || 'all'}`,
+  adminMeta: 'admin:meta:v2',
+  adminMetaForSop: (sopCode: string) => `admin:meta:sop:v2:${sopCode.toUpperCase()}`,
   adminExamSettings: 'admin:exam-settings',
+  adminSopExamSettings: 'admin:sop-exam-settings:v3',
 } as const;
 
 /**

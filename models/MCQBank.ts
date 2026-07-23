@@ -20,6 +20,27 @@ export interface IMCQ {
   isChecked?: boolean;
   isReviewed?: boolean;
   isSimilar?: boolean;
+  /** True when this MCQ was generated from linked annexure content (Annex swap). */
+  fromAnnexure?: boolean;
+  /** True when this MCQ came from creative/scenario fill near the bank cap. */
+  isCreative?: boolean;
+}
+
+/**
+ * What the generation run did with the SOP's linked annexures. Recorded at write
+ * time because the registry cannot tell after the fact whether a bank's questions
+ * saw annexure text — annexures may have been linked after the MCQs were made.
+ */
+export interface IMcqAnnexureUsage {
+  /** Annexure files linked to the SOP family when this run started. */
+  linkedCount: number;
+  /** Linked annexures whose text was extracted and folded into the prompt. */
+  includedCount: number;
+  /** Linked annexures that could not be read (missing file, image-only, .doc). */
+  skippedCount: number;
+  /** Labels of the annexures whose text was included. */
+  includedLabels: string[];
+  recordedAt: Date;
 }
 
 export interface IMCQBank extends Document {
@@ -35,6 +56,8 @@ export interface IMCQBank extends Document {
   difficultyDistribution: { easy: number; medium: number; hard: number };
   aiModel?: string;
   language?: "English" | "Gujarati";
+  /** Absent on banks generated before annexure usage was tracked. */
+  annexureUsage?: IMcqAnnexureUsage;
   isObsolete?: boolean;
   obsoleteAt?: Date;
   obsoleteReason?: string;
@@ -65,6 +88,19 @@ const MCQSchema = new Schema<IMCQ>(
     isChecked: { type: Boolean, default: false },
     isReviewed: { type: Boolean, default: false },
     isSimilar: { type: Boolean, default: false },
+    fromAnnexure: { type: Boolean, default: false },
+    isCreative: { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
+const McqAnnexureUsageSchema = new Schema<IMcqAnnexureUsage>(
+  {
+    linkedCount: { type: Number, default: 0 },
+    includedCount: { type: Number, default: 0 },
+    skippedCount: { type: Number, default: 0 },
+    includedLabels: { type: [String], default: [] },
+    recordedAt: { type: Date, default: Date.now },
   },
   { _id: false },
 );
@@ -91,6 +127,7 @@ const MCQBankSchema = new Schema<IMCQBank>(
     },
     aiModel: { type: String, default: "gemini-2.5-flash" },
     language: { type: String, enum: ["English", "Gujarati"], default: "English" },
+    annexureUsage: { type: McqAnnexureUsageSchema },
     isObsolete: { type: Boolean, default: false },
     obsoleteAt: { type: Date },
     obsoleteReason: { type: String },

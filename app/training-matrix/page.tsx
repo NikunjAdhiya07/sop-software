@@ -194,11 +194,12 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { TRAINING_MATRIX_CORE_DEPARTMENTS } from '@/lib/trainingMatrixDepartments';
 import { buildOfficeOnlineEmbedUrl, buildPreviewHref, isOfficePreviewAvailable } from '@/lib/file-urls';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DEFAULT_DEPARTMENTS = ['QA', 'QC', 'Microbiology', 'Production', 'Store', 'Engineering', 'Personnel'] as const;
+const DEFAULT_DEPARTMENTS = [...TRAINING_MATRIX_CORE_DEPARTMENTS];
 type Dept = string;
 
 const DEPT_ACCENT: Record<string, string> = {
@@ -2159,17 +2160,20 @@ interface SopOption { _id: string; identifier: string; name: string; department:
 
 function AssignSOPModal({
   defaultDept,
+  departments: departmentsProp,
   onClose,
   onSuccess,
 }: {
   defaultDept?: string;
+  departments?: string[];
   onClose: () => void;
   onSuccess: () => void;
 }) {
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth() + 1;
+  const deptOptions = departmentsProp?.length ? departmentsProp : DEFAULT_DEPARTMENTS;
 
-  const [department, setDepartment] = useState(defaultDept || 'QA');
+  const [department, setDepartment] = useState(defaultDept || deptOptions[0] || 'QA');
   const [sopSearch, setSopSearch] = useState('');
   const [sopOptions, setSopOptions] = useState<SopOption[]>([]);
   const [selectedSop, setSelectedSop] = useState<SopOption | null>(null);
@@ -2252,7 +2256,7 @@ function AssignSOPModal({
                 onChange={(e) => { setDepartment(e.target.value); setSelectedSop(null); setSopSearch(''); setSopOptions([]); }}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs focus:border-purple-300 focus:outline-none"
               >
-                {DEFAULT_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                {deptOptions.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
             </div>
             <div>

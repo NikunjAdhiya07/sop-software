@@ -7,8 +7,10 @@ import {
   Edit2,
   Loader2,
   MessageSquare,
+  Paperclip,
   RotateCcw,
   Save,
+  Sparkles,
   Star,
   X,
 } from "lucide-react";
@@ -23,6 +25,17 @@ interface MCQ {
   isChecked?: boolean;
   isReviewed?: boolean;
   isSimilar?: boolean;
+  fromAnnexure?: boolean;
+  isCreative?: boolean;
+}
+
+function isAnnexureMcq(mcq: Pick<MCQ, "fromAnnexure" | "question">): boolean {
+  if (mcq.fromAnnexure) return true;
+  return /\bAnnexure[-–—\s]*([IVXLC]+|\d+)\b/i.test(mcq.question ?? "");
+}
+
+function isCreativeMcq(mcq: Pick<MCQ, "isCreative">): boolean {
+  return Boolean(mcq.isCreative);
 }
 
 function displayDifficulty(raw: unknown): "Easy" | "Medium" | "Hard" {
@@ -154,12 +167,32 @@ export function QuestionAnalyticsModal({
 
           {/* Difficulty + Edit button row */}
           <div className="flex items-center justify-between">
-            <span
-              className={`w-8 h-8 flex items-center justify-center rounded-xl text-sm font-black border ${DIFF_BADGE[difficulty] ?? DIFF_BADGE.Medium}`}
-              title={difficulty}
-            >
-              {diffLabel}
-            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className={`w-8 h-8 flex items-center justify-center rounded-xl text-sm font-black border ${DIFF_BADGE[difficulty] ?? DIFF_BADGE.Medium}`}
+                title={difficulty}
+              >
+                {diffLabel}
+              </span>
+              {isAnnexureMcq(mcq) && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-teal-700"
+                  title="Generated from linked annexure content"
+                >
+                  <Paperclip className="h-3.5 w-3.5" />
+                  Annexure
+                </span>
+              )}
+              {isCreativeMcq(mcq) && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-violet-700"
+                  title="Creative scenario fill near bank cap"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Creative
+                </span>
+              )}
+            </div>
             {!editMode ? (
               <button
                 onClick={enterEdit}

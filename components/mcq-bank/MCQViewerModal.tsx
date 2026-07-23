@@ -18,6 +18,7 @@ import {
   Trash2,
   Wand2,
   X,
+  Paperclip,
 } from "lucide-react";
 
 interface MCQ {
@@ -31,6 +32,18 @@ interface MCQ {
   isChecked?: boolean;
   isReviewed?: boolean;
   isSimilar?: boolean;
+  fromAnnexure?: boolean;
+  isCreative?: boolean;
+}
+
+/** Explicit flag, or legacy annexure-swap questions that cite Annexure-I/II/… */
+function isAnnexureMcq(mcq: Pick<MCQ, "fromAnnexure" | "question">): boolean {
+  if (mcq.fromAnnexure) return true;
+  return /\bAnnexure[-–—\s]*([IVXLC]+|\d+)\b/i.test(mcq.question ?? "");
+}
+
+function isCreativeMcq(mcq: Pick<MCQ, "isCreative">): boolean {
+  return Boolean(mcq.isCreative);
 }
 
 function displayDifficulty(raw: unknown): "Easy" | "Medium" | "Hard" {
@@ -51,7 +64,7 @@ interface MCQBank {
   mcqs: MCQ[];
 }
 
-type StatusFilter = "all" | "checked" | "pending" | "similar" | "reviewed";
+type StatusFilter = "all" | "checked" | "pending" | "similar" | "reviewed" | "annexure" | "creative";
 type TabType = "active" | "recycled";
 
 const BATCH = 30;
@@ -154,6 +167,24 @@ function QuestionCard({ mcq, originalIndex, bankId, searchTerm, onUpdated, onOpe
                 title={difficulty}>
                 {difficulty[0]}
               </span>
+              {isAnnexureMcq(mcq) && (
+                <span
+                  className="inline-flex items-center gap-1 rounded border border-teal-200 bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-teal-700"
+                  title="Generated from linked annexure content"
+                >
+                  <Paperclip className="h-3 w-3" />
+                  Annex
+                </span>
+              )}
+              {isCreativeMcq(mcq) && (
+                <span
+                  className="inline-flex items-center gap-1 rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-700"
+                  title="Creative scenario fill near bank cap"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  Creative
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1.5">
               {mcq.isSimilar && (
@@ -408,6 +439,8 @@ export function MCQViewerModal({ bankId, onClose, onBack }: MCQViewerModalProps)
     if (statusFilter === "pending" && (q.isChecked || q.isReviewed)) return false;
     if (statusFilter === "similar" && !q.isSimilar) return false;
     if (statusFilter === "reviewed" && !q.isReviewed) return false;
+    if (statusFilter === "annexure" && !isAnnexureMcq(q)) return false;
+    if (statusFilter === "creative" && !isCreativeMcq(q)) return false;
     if (sl) {
       const qText = (q.question || "").toLowerCase();
       const opts = (q.options || []).join(" ").toLowerCase();
@@ -428,6 +461,8 @@ export function MCQViewerModal({ bankId, onClose, onBack }: MCQViewerModalProps)
     pending:  mcqs.filter((q) => !q.isChecked && !q.isReviewed).length,
     similar:  mcqs.filter((q) => q.isSimilar).length,
     reviewed: mcqs.filter((q) => q.isReviewed).length,
+    annexure: mcqs.filter((q) => isAnnexureMcq(q)).length,
+    creative: mcqs.filter((q) => isCreativeMcq(q)).length,
   };
 
   const isGuj = (bank?.language ?? "").toLowerCase() === "gujarati";
@@ -457,6 +492,8 @@ export function MCQViewerModal({ bankId, onClose, onBack }: MCQViewerModalProps)
     { id: "pending" as const,  label: "Pending",   icon: <Loader2 className="h-3.5 w-3.5" />,      activeClass: "text-orange-400" },
     { id: "similar" as const,  label: "Similar",   icon: <Copy className="h-3.5 w-3.5" />,          activeClass: "text-amber-400" },
     { id: "reviewed" as const, label: "Reviewed",  icon: <CheckCircle2 className="h-3.5 w-3.5" />,  activeClass: "text-blue-400" },
+    { id: "annexure" as const, label: "Annexure",  icon: <Paperclip className="h-3.5 w-3.5" />,     activeClass: "text-teal-400" },
+    { id: "creative" as const, label: "Creative",  icon: <Sparkles className="h-3.5 w-3.5" />,      activeClass: "text-violet-400" },
   ] as const;
 
   return (

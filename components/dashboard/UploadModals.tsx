@@ -7,6 +7,7 @@ import { useDashboardStore } from "@/lib/store/dashboard-store";
 import { appendFilesWithPaths } from "@/lib/upload-form";
 import { BulkUploadProgressBar, BulkUploadResults, sopUploadToastMessage, summarizeSopUploadResults, type SopUploadResult, type UploadProgress } from "./BulkUploadShell";
 import { Btn, Modal } from "./ui";
+import { PostUploadPipelineModal } from "./PostUploadPipelineModal";
 
 const UPLOAD_BATCH_SIZE = 8;
 
@@ -39,11 +40,12 @@ export function UploadSOPModal({
   const [name, setName] = useState("");
   const [version, setVersion] = useState("1.0");
   const [location, setLocation] = useState("");
-  const [generateMcq, setGenerateMcq] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [results, setResults] = useState<SopUploadResult[]>([]);
-  const { addPipelineJob, showToast } = useDashboardStore();
+  const [pipelineIds, setPipelineIds] = useState<string[]>([]);
+  const [pipelineOpen, setPipelineOpen] = useState(false);
+  const { showToast } = useDashboardStore();
 
   const allDepts = [...new Set([...DEPARTMENTS, ...departmentList])];
 
@@ -66,7 +68,7 @@ export function UploadSOPModal({
           if (identifier) formData.append("identifier", identifier);
           if (name) formData.append("name", name);
           if (location) formData.append("location", location);
-          formData.append("generateMcq", String(generateMcq));
+          formData.append("generateMcq", "false");
           appendFilesWithPaths(formData, batch);
 
           const res = await fetch("/api/sop/upload-batch", { method: "POST", body: formData });
@@ -81,24 +83,21 @@ export function UploadSOPModal({
 
         setResults(allResults);
 
-        if (generateMcq) {
-          for (const r of allResults) {
-            if (r.success && r.identifier) {
-              addPipelineJob({
-                identifier: r.identifier,
-                language: language === "Gujarati" ? "GUJ" : "ENG",
-                stage: "mcq_generating",
-                status: "running",
-                progress: 20,
-              });
-            }
-          }
-        }
-
         const summary = summarizeSopUploadResults(allResults);
         if (summary.success > 0) {
           showToast(sopUploadToastMessage(summary));
           onSuccess();
+          const ids = [
+            ...new Set(
+              allResults
+                .filter((r) => r.success && r.identifier)
+                .map((r) => r.identifier as string),
+            ),
+          ];
+          if (ids.length) {
+            setPipelineIds(ids);
+            setPipelineOpen(true);
+          }
         } else if (allResults.length > 0) {
           showToast(sopUploadToastMessage(summary));
         }
@@ -115,18 +114,7 @@ export function UploadSOPModal({
         setUploadProgress(null);
       }
     },
-    [
-      department,
-      language,
-      identifier,
-      name,
-      version,
-      location,
-      generateMcq,
-      addPipelineJob,
-      showToast,
-      onSuccess,
-    ],
+    [department, language, identifier, name, version, location, showToast, onSuccess],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -139,6 +127,7 @@ export function UploadSOPModal({
   });
 
   return (
+    <>
     <Modal open={open} onClose={onClose} title="Upload SOP" wide>
       <div className="mb-3 flex gap-1">
         {(["English", "Gujarati"] as const).map((lang) => (
@@ -207,13 +196,9 @@ export function UploadSOPModal({
         </label>
       </div>
 
-      <label className="mb-3 flex items-center gap-2 text-xs">
-        <input
-          type="checkbox"
-          checked={generateMcq}
-          onChange={(e) => setGenerateMcq(e.target.checked)}
-        />
-        Auto-generate MCQs after upload
+      <label className="mb-3 block text-[10px] text-slate-500">
+        After a successful upload, you will be asked to start Codex MCQ generation and full
+        compliance (only if Codex is logged in on this machine).
       </label>
 
       <div
@@ -243,5 +228,11 @@ export function UploadSOPModal({
         <Btn onClick={onClose}>Close</Btn>
       </div>
     </Modal>
+    <PostUploadPipelineModal
+      open={pipelineOpen}
+      identifiers={pipelineIds}
+      onClose={() => setPipelineOpen(false)}
+    />
+    </>
   );
 }

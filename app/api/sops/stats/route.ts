@@ -3,6 +3,7 @@ import { connectDB, isMongoConnectivityError } from "@/lib/mongodb";
 import Department from "@/models/Department";
 import { buildDashboardStats, sortByDeptOrder } from "@/lib/sop-utils";
 import { loadGroupedRegistry } from "@/lib/dashboardRegistrySource";
+import { isDashboardDepartmentName } from "@/lib/dashboardDepartments";
 import { requireAuth } from "@/lib/withAuth";
 
 export const dynamic = "force-dynamic";
@@ -22,13 +23,21 @@ export async function GET() {
     const stats = buildDashboardStats(registry, persistedDepts);
 
     // departmentList = union of SOP-derived and persisted (for dropdowns)
-    const sopDepts = registry.filter((r) => !r.isObsolete).map((r) => r.department);
+    const sopDepts = registry
+      .filter((r) => !r.isObsolete)
+      .map((r) => r.department)
+      .filter(isDashboardDepartmentName);
     const departmentList = sortByDeptOrder([
-      ...new Set([...sopDepts, ...persistedDepts]),
+      ...new Set([...sopDepts, ...persistedDepts.filter(isDashboardDepartmentName)]),
     ]);
 
+    // Drop Other/Unknown capsules so dashboard matches LMS / MCQ department universe.
+    const departments = (stats.departments ?? []).filter(
+      (d) => d.department === "Total" || isDashboardDepartmentName(d.department),
+    );
+
     return NextResponse.json(
-      { ...stats, departmentList },
+      { ...stats, departments, departmentList },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

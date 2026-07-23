@@ -13,7 +13,7 @@ import { getDeptCellColors } from '@/lib/department-colors';
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const ROW_BATCH = 50;
 
-type SopStatus = 'completed' | 'partial' | 'not_completed';
+type SopStatus = 'completed' | 'not_completed';
 type SortDir = 'asc' | 'desc';
 interface SortState { key: string; dir: SortDir; }
 
@@ -25,7 +25,6 @@ export interface SopGridRow {
   department: string;
   assigned: number;
   completed: number;
-  partial: number;
   notCompleted: number;
   completionPct: number;
   monthlyBreakdown: MonthBreakdown[];
@@ -37,7 +36,6 @@ export type SopGridDrill =
 
 const MONTH_STATUS_SUBS = [
   { suffix: 'completed', label: '✓', title: 'Completed', tone: 'text-green-600' },
-  { suffix: 'partial', label: '◐', title: 'Partially completed', tone: 'text-amber-600' },
   { suffix: 'notCompleted', label: '○', title: 'Not completed', tone: 'text-violet-600' },
 ] as const;
 
@@ -49,19 +47,18 @@ function nextSort(prev: SortState, key: string, defaultDir: SortDir = 'asc'): So
 }
 
 function monthTotal(b: MonthBreakdown): number {
-  return b.completed + b.partial + b.notCompleted;
+  return b.completed + b.notCompleted;
 }
 
 function monthSortValue(breakdown: MonthBreakdown | undefined, sub: typeof MONTH_STATUS_SUBS[number]['suffix'] | 'total'): number {
   if (!breakdown) return 0;
   if (sub === 'total') return monthTotal(breakdown);
   if (sub === 'completed') return breakdown.completed;
-  if (sub === 'partial') return breakdown.partial;
   return breakdown.notCompleted;
 }
 
 function parseMonthSortKey(key: string): { monthIndex: number; sub: typeof MONTH_STATUS_SUBS[number]['suffix'] | 'total' } | null {
-  const match = key.match(/^m(\d+)(?:_(completed|partial|notCompleted))?$/);
+  const match = key.match(/^m(\d+)(?:_(completed|notCompleted))?$/);
   if (!match) return null;
   return {
     monthIndex: Number(match[1]),
@@ -114,7 +111,7 @@ function MonthSortHeader({
   const active = sort.key === sortKey;
   const borderCls = [
     isFirst ? 'border-l border-gray-200' : '',
-    subIdx < 2 ? 'border-r border-gray-100' : '',
+    subIdx < 1 ? 'border-r border-gray-100' : '',
   ].filter(Boolean).join(' ');
   return (
     <th
@@ -136,13 +133,12 @@ function CountCell({
   count, tone, onClick,
 }: {
   count: number;
-  tone: 'green' | 'amber' | 'gray';
+  tone: 'green' | 'gray';
   onClick: () => void;
 }) {
   if (count === 0) return <span className="text-sm text-violet-300">0</span>;
   const toneCls =
     tone === 'green' ? 'bg-green-50 text-green-700 hover:bg-green-100' :
-    tone === 'amber' ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' :
     'bg-violet-50 text-violet-700 hover:bg-violet-100';
   return (
     <button
@@ -159,12 +155,11 @@ function MiniMonthCount({
   count, tone, onClick,
 }: {
   count: number;
-  tone: 'green' | 'amber' | 'gray';
+  tone: 'green' | 'gray';
   onClick?: () => void;
 }) {
   const toneCls =
     tone === 'green' ? 'bg-green-50 text-green-700 hover:bg-green-100' :
-    tone === 'amber' ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' :
     'bg-violet-50 text-violet-700 hover:bg-violet-100';
   const body = (
     <span className={`inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded px-1 text-[10px] font-bold leading-none ${count === 0 ? 'text-violet-200' : toneCls}`}>
@@ -205,12 +200,11 @@ function MonthStatusCell({
 }) {
   const currentMonth = new Date().getMonth();
   const isFuture = monthIndex > currentMonth;
-  const tone: 'green' | 'amber' | 'gray' =
-    status === 'completed' ? 'green' : status === 'partial' ? 'amber' : 'gray';
+  const tone: 'green' | 'gray' = status === 'completed' ? 'green' : 'gray';
 
   const borderCls = [
     subIdx === 0 ? 'border-l border-gray-200' : '',
-    subIdx < 2 ? 'border-r border-gray-100' : '',
+    subIdx < 1 ? 'border-r border-gray-100' : '',
   ].filter(Boolean).join(' ');
   const cellCls = [MONTH_SUB_CELL, borderCls, extraClass].filter(Boolean).join(' ');
 
@@ -295,7 +289,6 @@ export function SopTrainingGrid({
         case 'department':    return r.department.toLowerCase();
         case 'assigned':      return r.assigned;
         case 'completed':     return r.completed;
-        case 'partial':       return r.partial;
         case 'notCompleted':  return r.notCompleted;
         case 'completionPct': return r.completionPct;
         default: {
@@ -358,14 +351,13 @@ export function SopTrainingGrid({
   const stickyHead = 'sticky top-0 z-20 bg-gray-50';
   const stickySopHead = 'sticky left-0 z-30 bg-gray-50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]';
   const stickySopCell = 'sticky left-0 z-10 bg-white shadow-[2px_0_4px_-2px_rgba(0,0,0,0.06)] group-hover:bg-gray-50';
-  const tableColSpan = 6 + visibleMonthIndices.length * 3 + 1;
+  const tableColSpan = 5 + visibleMonthIndices.length * 2 + 1;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-gray-100 bg-gray-50/80 px-4 py-2 text-[11px] text-gray-500">
         <span className="font-medium text-gray-600">Month columns:</span>
         <span className="inline-flex items-center gap-1"><span className="inline-flex h-4 min-w-4 items-center justify-center rounded bg-green-50 px-1 text-[10px] font-bold text-green-700">✓</span> Completed</span>
-        <span className="inline-flex items-center gap-1"><span className="inline-flex h-4 min-w-4 items-center justify-center rounded bg-amber-50 px-1 text-[10px] font-bold text-amber-700">◐</span> Partially completed</span>
         <span className="inline-flex items-center gap-1"><span className="inline-flex h-4 min-w-4 items-center justify-center rounded bg-violet-50 px-1 text-[10px] font-bold text-violet-700">○</span> Not completed</span>
         <span className="text-gray-400">· click sub-headers to sort</span>
         <button
@@ -388,7 +380,6 @@ export function SopTrainingGrid({
             <col style={colPct(cols.stat)} />
             <col style={colPct(cols.stat)} />
             <col style={colPct(cols.stat)} />
-            <col style={colPct(cols.stat)} />
             {visibleMonthIndices.flatMap((i) =>
               MONTH_STATUS_SUBS.map((sub) => (
                 <col key={`${i}-${sub.suffix}`} style={colPct(cols.monthSub)} />
@@ -402,7 +393,6 @@ export function SopTrainingGrid({
               <SortHeader label="Dept." sortKey="department" sort={sort} onSort={onSort} cls="px-2 py-1.5 text-[10px]" stickyCls={stickyHead} rowSpan={2} />
               <SortHeader label="Assign" sortKey="assigned" sort={sort} onSort={onSort} align="center" cls="px-0.5 py-1.5 text-[10px]" stickyCls={stickyHead} rowSpan={2} />
               <SortHeader label="Done" sortKey="completed" sort={sort} onSort={onSort} align="center" cls="px-0.5 py-1.5 text-[10px]" stickyCls={stickyHead} rowSpan={2} />
-              <SortHeader label="Part" sortKey="partial" sort={sort} onSort={onSort} align="center" cls="px-0.5 py-1.5 text-[10px]" stickyCls={stickyHead} rowSpan={2} />
               <SortHeader label="Not" sortKey="notCompleted" sort={sort} onSort={onSort} align="center" cls="px-0.5 py-1.5 text-[10px]" stickyCls={stickyHead} rowSpan={2} />
               {visibleMonthIndices.map((i) => {
                 const m = MONTHS[i];
@@ -411,7 +401,7 @@ export function SopTrainingGrid({
                 return (
                   <th
                     key={`${m}-group`}
-                    colSpan={3}
+                    colSpan={2}
                     className={`${stickyHead} border-l border-gray-200 px-0 py-0.5 text-center text-[9px] font-semibold uppercase tracking-tight ${isFuture ? 'bg-gray-100/90 text-gray-300' : monthTotalActive ? 'text-gray-700' : 'text-gray-500'}`}
                   >
                     {m.toUpperCase()}
@@ -457,13 +447,6 @@ export function SopTrainingGrid({
                 </td>
                 <td className="px-0.5 py-1.5 text-center">
                   <CountCell
-                    count={r.partial}
-                    tone="amber"
-                    onClick={() => r.partial > 0 && onDrill({ kind: 'status', row: r, status: 'partial' })}
-                  />
-                </td>
-                <td className="px-0.5 py-1.5 text-center">
-                  <CountCell
                     count={r.notCompleted}
                     tone="gray"
                     onClick={() => r.notCompleted > 0 && onDrill({ kind: 'status', row: r, status: 'not_completed' })}
@@ -481,19 +464,12 @@ export function SopTrainingGrid({
                         subIdx={0}
                       />
                       <MonthStatusCell
-                        count={b.partial}
-                        monthIndex={i}
-                        status="partial"
-                        onDrill={(status) => onDrill({ kind: 'month', row: r, month: i + 1, status })}
-                        subIdx={1}
-                      />
-                      <MonthStatusCell
                         count={b.notCompleted}
                         monthIndex={i}
                         status="not_completed"
                         onDrill={(status) => onDrill({ kind: 'month', row: r, month: i + 1, status })}
                         extraClass={i === lastVisibleMonth ? 'pr-2' : undefined}
-                        subIdx={2}
+                        subIdx={1}
                       />
                     </Fragment>
                   );

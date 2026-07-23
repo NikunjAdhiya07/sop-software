@@ -18,7 +18,9 @@ import {
   LayoutList,
   Loader2,
   Lock,
+  Minimize2,
   Monitor,
+  Paperclip,
   RefreshCw,
   Search,
   Sparkles,
@@ -31,6 +33,11 @@ import { DeptDetailModal } from "./DeptDetailModal";
 import { DeptGridSkeleton } from "./MCQSkeleton";
 import { displaySopCode, displaySopTitle } from "@/lib/sop-display";
 import { normalizeSopIdentifierKey } from "@/lib/sopIdentifierNormalize";
+import {
+  mcqAnnexureStatusClass,
+  mcqAnnexureStatusTitle,
+  type McqAnnexureStatus,
+} from "@/lib/mcqAnnexureStatus";
 
 type McqGenProvider = "claude" | "codex" | "ollama";
 
@@ -116,6 +123,9 @@ interface RegistryEntry {
   /** Count of annexure files linked to this SOP family — included in MCQ
    *  generation prompts when > 0. */
   annexureCount: number;
+  /** Whether the current MCQs were actually generated from those annexures. */
+  annexureStatus: McqAnnexureStatus;
+  annexureIncludedLabels: string[];
 }
 
 type McqLang = "English" | "Gujarati";
@@ -840,7 +850,7 @@ function genBankProgress(progress: GenProgress) {
   return { totalInBank, totalTarget, bankPercent, barPercent };
 }
 
-/** Bottom-right toast for in-flight generation — survives page refresh via active-job resume. */
+/** In-flight generation toast card (parent supplies fixed bottom-right dock). */
 function McqGenProgressToast({
   items,
   onOpen,
@@ -851,7 +861,7 @@ function McqGenProgressToast({
   if (items.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-[75] flex max-w-sm flex-col gap-2 pointer-events-none">
+    <>
       {items.map(({ entry, progress }) => {
         const { totalInBank, totalTarget, barPercent } = genBankProgress(progress);
         const sopCode = displaySopCode(entry.identifier);
@@ -890,31 +900,267 @@ function McqGenProgressToast({
           </div>
         );
       })}
+    </>
+  );
+}
+
+interface AnnexSwapProgress {
+  key: string;
+  entryId: string;
+  code: string;
+  language: McqLang;
+  provider: McqGenProvider;
+  status: "running" | "completed" | "error";
+  phase: string;
+  percent: number;
+  logs: string[];
+  startedAt: number;
+  error?: string;
+  result?: { removed: number; inserted: number; annexuresUsed: number };
+  /** User closed the toast; job may still be running (button spinner stays). */
+  hidden?: boolean;
+}
+
+function formatElapsed(ms: number): string {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
+}
+
+/** Soft progress while the long HTTP swap is in flight (API has no mid-request status).
+ *  Never sits at a fixed % — creeps toward 97% until the server responds. */
+function annexSwapSoftProgress(elapsedMs: number, provider: string): { percent: number; phase: string; log?: string } {
+  const sec = elapsedMs / 1000;
+  if (sec < 1.5) return { percent: 8, phase: "Loading SOP & linked annexures…", log: "Reading SOP family + annexure text" };
+  if (sec < 4) return { percent: 18, phase: "Preparing annexure excerpt…", log: "Trimming annexure text for the model" };
+  if (sec < 12) {
+    return {
+      percent: 35,
+      phase: `Generating annexure MCQs via ${provider}…`,
+      log: `LLM generating annexure questions (${provider})`,
+    };
+  }
+  if (sec < 30) return { percent: 55, phase: "Model is writing questions…", log: "Waiting on model response" };
+  if (sec < 60) return { percent: 70, phase: "Still generating — Codex/CLI can take a minute…", log: "Background process still running" };
+  if (sec < 120) return { percent: 82, phase: "Long run — still waiting on the model…", log: "Still waiting on model (this is normal for Codex)" };
+  // After 2 min: keep creeping 90→97% so the bar never looks frozen.
+  const creep = 90 + 7 * (1 - Math.exp(-(sec - 120) / 180));
+  const percent = Math.min(97, Math.round(creep));
+  if (sec < 240) {
+    return { percent, phase: "Still waiting on the model…", log: "Model still working — progress will complete when it returns" };
+  }
+  return {
+    percent,
+    phase: "Taking longer than usual — will time out if the model stays silent…",
+    log: "Waiting past 4 minutes — client will abort soon if no response",
+  };
+}
+
+/** Client-side deadline for annexure-swap fetch (ms). */
+const ANNEX_SWAP_CLIENT_TIMEOUT_MS = 5 * 60 * 1000;
+
+function AnnexSwapProgressCard({
+  progress,
+  compact = false,
+  onDismiss,
+  onHide,
+}: {
+  progress: AnnexSwapProgress;
+  compact?: boolean;
+  onDismiss?: () => void;
+  /** Hide toast while a run continues in the background. */
+  onHide?: () => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const [minimized, setMinimized] = useState(false);
+  useEffect(() => {
+    if (progress.status !== "running") return;
+    const id = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, [progress.status]);
+
+  const elapsed =
+    progress.status === "running"
+      ? now - progress.startedAt
+      : Math.max(0, now - progress.startedAt);
+  const soft = annexSwapSoftProgress(elapsed, progress.provider);
+  const langLabel = progress.language === "Gujarati" ? "GUJ" : "ENG";
+  const isRunning = progress.status === "running";
+  const isError = progress.status === "error";
+  const displayPercent = isRunning ? soft.percent : progress.percent;
+  const displayPhase = isRunning ? soft.phase : progress.phase;
+  const logs = progress.logs.slice(-6);
+
+  const handleClose = () => {
+    if (isRunning) onHide?.();
+    else onDismiss?.();
+  };
+
+  return (
+    <div
+      className={`overflow-hidden rounded-xl border shadow-lg ring-1 ring-black/5 ${
+        isError
+          ? "border-red-200 bg-red-50"
+          : isRunning
+            ? "border-teal-200 bg-teal-50/95"
+            : "border-emerald-200 bg-emerald-50"
+      } ${compact ? "min-w-[220px] max-w-[280px]" : "w-full max-w-xs"}`}
+    >
+      <div className="flex items-start gap-2 px-2.5 py-2">
+        {isRunning ? (
+          <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-teal-600" />
+        ) : isError ? (
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
+        ) : (
+          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-1.5">
+            <p
+              className={`min-w-0 truncate text-[9px] font-bold uppercase tracking-wide ${
+                isError ? "text-red-700" : isRunning ? "text-teal-800" : "text-emerald-800"
+              }`}
+            >
+              {isRunning ? "Annex swap · background" : isError ? "Annex swap failed" : "Annex swap done"}
+            </p>
+            <div className="flex shrink-0 items-center gap-0.5">
+              <span className="mr-0.5 text-[9px] font-mono tabular-nums text-gray-500">
+                {formatElapsed(elapsed)}
+              </span>
+              <button
+                type="button"
+                onClick={() => setMinimized((m) => !m)}
+                className="rounded p-0.5 text-gray-400 hover:bg-white/80 hover:text-gray-700"
+                title={minimized ? "Expand" : "Minimize"}
+              >
+                {minimized ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <Minimize2 className="h-3 w-3" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="rounded p-0.5 text-gray-400 hover:bg-white/80 hover:text-gray-700"
+                title={isRunning ? "Hide (keeps running)" : "Close"}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          <p className="truncate text-[10px] font-semibold text-gray-800">
+            {progress.code} · {langLabel}
+            <span className="ml-1 font-normal text-gray-500">via {progress.provider}</span>
+          </p>
+          {minimized ? (
+            <div className="mt-1 flex items-center gap-2">
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/80 ring-1 ring-black/5">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    isError ? "bg-red-500" : isRunning ? "bg-teal-500" : "bg-emerald-500"
+                  }`}
+                  style={{ width: `${Math.min(100, Math.max(4, displayPercent))}%` }}
+                />
+              </div>
+              <span
+                className={`shrink-0 text-[9px] font-bold tabular-nums ${
+                  isError ? "text-red-700" : isRunning ? "text-teal-700" : "text-emerald-700"
+                }`}
+              >
+                {Math.min(100, displayPercent)}%
+              </span>
+            </div>
+          ) : (
+            <>
+              <p className="mt-0.5 truncate text-[10px] text-gray-600">{displayPhase}</p>
+              <div className="mt-1.5 flex items-center gap-2">
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/80 ring-1 ring-black/5">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      isError ? "bg-red-500" : isRunning ? "bg-teal-500" : "bg-emerald-500"
+                    }`}
+                    style={{ width: `${Math.min(100, Math.max(4, displayPercent))}%` }}
+                  />
+                </div>
+                <span
+                  className={`shrink-0 text-[9px] font-bold tabular-nums ${
+                    isError ? "text-red-700" : isRunning ? "text-teal-700" : "text-emerald-700"
+                  }`}
+                >
+                  {Math.min(100, displayPercent)}%
+                </span>
+              </div>
+              {logs.length > 0 && (
+                <div className="mt-1.5 max-h-20 overflow-y-auto rounded-md bg-white/70 px-1.5 py-1 ring-1 ring-black/5">
+                  {logs.map((line, i) => (
+                    <p key={`${i}-${line.slice(0, 24)}`} className="truncate font-mono text-[8px] leading-relaxed text-gray-600">
+                      {line}
+                    </p>
+                  ))}
+                  {isRunning && soft.log && (
+                    <p className="truncate font-mono text-[8px] leading-relaxed text-teal-700">
+                      {new Date(now).toLocaleTimeString()}  {soft.log}
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                <div className="rounded-md bg-white/80 px-1.5 py-1 text-center ring-1 ring-black/5">
+                  <p className={`text-sm font-bold tabular-nums leading-none ${isError ? "text-red-600" : "text-rose-600"}`}>
+                    {progress.result ? `−${progress.result.removed}` : isRunning ? "…" : "−0"}
+                  </p>
+                  <p className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-400">Removed</p>
+                </div>
+                <div className="rounded-md bg-white/80 px-1.5 py-1 text-center ring-1 ring-black/5">
+                  <p className={`text-sm font-bold tabular-nums leading-none ${isError ? "text-red-600" : "text-emerald-600"}`}>
+                    {progress.result ? `+${progress.result.inserted}` : isRunning ? "…" : "+0"}
+                  </p>
+                  <p className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-400">Added</p>
+                </div>
+              </div>
+              {progress.result && !isRunning && !isError && (
+                <p className="mt-1 text-[9px] font-semibold text-emerald-800">
+                  From {progress.result.annexuresUsed} annexure
+                  {progress.result.annexuresUsed === 1 ? "" : "s"}
+                </p>
+              )}
+              {isError && progress.error && (
+                <p className="mt-1 text-[9px] font-semibold leading-snug text-red-700">{progress.error}</p>
+              )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 function ActionBtn({
-  label, variant, disabled, loading, icon: Icon, onClick,
+  label, variant, disabled, loading, icon: Icon, onClick, title,
 }: {
   label: string;
-  variant: "generate" | "regenerate" | "continue" | "view";
+  variant: "generate" | "regenerate" | "continue" | "view" | "annexure";
   disabled?: boolean;
   loading?: boolean;
   icon: typeof Sparkles;
   onClick: () => void;
+  title?: string;
 }) {
   const styles = {
     generate: "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
     regenerate: "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100",
     continue: "border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100",
     view: "border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100",
+    annexure: "border-teal-300 bg-teal-50 text-teal-700 hover:bg-teal-100",
   }[variant];
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[9px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${styles}`}
     >
       {loading ? (
@@ -1034,7 +1280,7 @@ function DeleteMcqMenu({
 }
 
 function RegistryRow({
-  entry, isEven, onViewMcqs, onGenerate, onRegenerate, onContinue, onDeleteRequest, onOpenProgress, onStop, genStatus,
+  entry, isEven, onViewMcqs, onGenerate, onRegenerate, onContinue, onDeleteRequest, onOpenProgress, onStop, onAnnexureSwap, annexureSwapLang, genStatus,
 }: {
   entry: RegistryEntry; isEven: boolean;
   onViewMcqs?: (id: string) => void;
@@ -1044,6 +1290,9 @@ function RegistryRow({
   onDeleteRequest?: (entry: RegistryEntry, scope: McqDeleteScope) => void;
   onOpenProgress?: (entry: RegistryEntry) => void;
   onStop?: (entry: RegistryEntry) => void;
+  onAnnexureSwap?: (entry: RegistryEntry, language: McqLang) => void;
+  /** Language whose annexure swap is currently in flight, if any. */
+  annexureSwapLang?: McqLang | null;
   genStatus?: GenProgress;
 }) {
   const serverRunning = genStatus?.status === "generating";
@@ -1081,24 +1330,27 @@ function RegistryRow({
               {gujTitle}
             </span>
           )}
-          {entry.annexureCount > 0 ? (
-            <span
-              className="mt-0.5 inline-flex w-fit items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-semibold text-emerald-700"
-              title={`${entry.annexureCount} annexure file(s) linked — their content is included when MCQs are generated`}
-            >
-              📎 {entry.annexureCount} annexure{entry.annexureCount === 1 ? "" : "s"} linked
-            </span>
-          ) : (
-            <span
-              className="mt-0.5 inline-flex w-fit items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-semibold text-gray-400"
-              title="No annexure files are linked to this SOP — generated MCQs are based on the main SOP content only"
-            >
-              No annexures linked
-            </span>
-          )}
         </div>
       </td>
       <td className="px-3 py-2.5 whitespace-nowrap text-[11px] text-gray-600">{entry.department}</td>
+      {/* Annex — compact 3-state: were annexures used when these MCQs were made? */}
+      <td className="px-2 py-2.5 text-center whitespace-nowrap">
+        <span
+          className={`inline-flex items-center gap-0.5 text-[10px] font-bold tabular-nums ${mcqAnnexureStatusClass(entry.annexureStatus)}`}
+          title={mcqAnnexureStatusTitle({
+            status: entry.annexureStatus,
+            linkedCount: entry.annexureCount,
+            includedLabels: entry.annexureIncludedLabels,
+            hasMcqs: entry.totalMcqs > 0,
+          })}
+        >
+          {entry.annexureStatus === "included"
+            ? `📎 ${entry.annexureCount}`
+            : entry.annexureStatus === "linked-not-used"
+              ? `⚠ ${entry.annexureCount}`
+              : "—"}
+        </span>
+      </td>
       {/* Lang — stacked ENG/GUJ for dual-language families, matching SOP Registry */}
       <td className="px-3 py-2.5 text-center whitespace-nowrap">
         {isDual ? (
@@ -1239,6 +1491,26 @@ function RegistryRow({
                 onClick={() => onContinue?.(entry, isDual ? "Gujarati" : undefined)}
               />
             )}
+            {!entry.isObsoleteMcq && entry.annexureCount > 0 && needsEn && entry.hasEnMcq && (
+              <ActionBtn
+                variant="annexure"
+                icon={Paperclip}
+                label={isDual ? "Annex ENG" : "Annex MCQ"}
+                loading={annexureSwapLang === "English"}
+                onClick={() => onAnnexureSwap?.(entry, "English")}
+                title="Swap duplicate/similar MCQs for questions from linked annexures (creative-fill kept)"
+              />
+            )}
+            {!entry.isObsoleteMcq && entry.annexureCount > 0 && needsGu && entry.hasGuMcq && (
+              <ActionBtn
+                variant="annexure"
+                icon={Paperclip}
+                label={isDual ? "Annex GUJ" : "Annex MCQ"}
+                loading={annexureSwapLang === "Gujarati"}
+                onClick={() => onAnnexureSwap?.(entry, "Gujarati")}
+                title="Swap duplicate/similar MCQs for questions from linked annexures (creative-fill kept)"
+              />
+            )}
             {!entry.isObsoleteMcq && (entry.hasEnMcq || entry.hasGuMcq) && (
               <DeleteMcqMenu
                 entry={entry}
@@ -1310,7 +1582,7 @@ export function MCQBankClient() {
   // UI state
   const [showDeptCards, setShowDeptCards] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [selectedProvider, setSelectedProvider] = useState<McqGenProvider>("claude");
+  const [selectedProvider, setSelectedProvider] = useState<McqGenProvider>("codex");
   const [claudeStatus, setClaudeStatus] = useState<{
     ok: boolean;
     model?: string;
@@ -1364,6 +1636,14 @@ export function MCQBankClient() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // Annexure swap: confirm target + live bottom-right progress cards (phase/logs/
+  // removed+added). Removes ~15 duplicate/similar MCQs and replaces them with
+  // annexure-derived questions.
+  const [annexSwapTarget, setAnnexSwapTarget] = useState<{ entry: RegistryEntry; language: McqLang } | null>(null);
+  const [annexSwapProgress, setAnnexSwapProgress] = useState<AnnexSwapProgress[]>([]);
+  const annexSwapTimersRef = useRef<Map<string, number>>(new Map());
+
 
   const mcqRegistryRef = useRef<HTMLDivElement>(null);
 
@@ -1847,6 +2127,164 @@ export function MCQBankClient() {
     }
   }, [deletePassword, deleteTarget, cancelDelete]);
 
+  // Open the annexure-swap confirm dialog.
+  const requestAnnexureSwap = useCallback((entry: RegistryEntry, language: McqLang) => {
+    setAnnexSwapTarget({ entry, language });
+  }, []);
+
+  const patchAnnexSwap = useCallback((key: string, patch: Partial<AnnexSwapProgress> | ((prev: AnnexSwapProgress) => Partial<AnnexSwapProgress>)) => {
+    setAnnexSwapProgress((list) =>
+      list.map((item) => {
+        if (item.key !== key) return item;
+        const next = typeof patch === "function" ? patch(item) : patch;
+        return {
+          ...item,
+          ...next,
+          logs: next.logs ?? item.logs,
+        };
+      }),
+    );
+  }, []);
+
+  const dismissAnnexSwap = useCallback((key: string) => {
+    const timer = annexSwapTimersRef.current.get(key);
+    if (timer) {
+      window.clearTimeout(timer);
+      annexSwapTimersRef.current.delete(key);
+    }
+    setAnnexSwapProgress((list) => list.filter((p) => p.key !== key));
+  }, []);
+
+  const hideAnnexSwap = useCallback((key: string) => {
+    patchAnnexSwap(key, { hidden: true });
+  }, [patchAnnexSwap]);
+
+  const confirmAnnexureSwap = useCallback(async () => {
+    if (!annexSwapTarget) return;
+    const { entry, language } = annexSwapTarget;
+    const key = `${entry.id}::${language}`;
+    const code = displaySopCode(entry.identifier);
+    const provider = selectedProvider;
+    setAnnexSwapTarget(null);
+
+    // Don't start a duplicate run for the same SOP+language.
+    let started = false;
+    const startedAt = Date.now();
+    setAnnexSwapProgress((list) => {
+      if (list.some((p) => p.key === key && p.status === "running")) return list;
+      started = true;
+      return [
+        ...list.filter((p) => p.key !== key),
+        {
+          key,
+          entryId: entry.id,
+          code,
+          language,
+          provider,
+          status: "running",
+          phase: "Starting annexure swap…",
+          percent: 5,
+          logs: [
+            `${new Date().toLocaleTimeString()}  Background annexure swap started`,
+            `${new Date().toLocaleTimeString()}  Provider: ${provider} · ${language === "Gujarati" ? "GUJ" : "ENG"}`,
+          ],
+          startedAt,
+        },
+      ];
+    });
+    if (!started) return;
+
+    // Push soft-phase milestones into the log pane while the HTTP request is open.
+    const seenPhases = new Set<string>();
+    const milestoneId = window.setInterval(() => {
+      const soft = annexSwapSoftProgress(Date.now() - startedAt, provider);
+      if (seenPhases.has(soft.phase)) return;
+      seenPhases.add(soft.phase);
+      patchAnnexSwap(key, (prev) => {
+        if (prev.status !== "running") return {};
+        return {
+          phase: soft.phase,
+          percent: soft.percent,
+          logs: [
+            ...prev.logs,
+            `${new Date().toLocaleTimeString()}  ${soft.log ?? soft.phase}`,
+          ].slice(-12),
+        };
+      });
+    }, 800);
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), ANNEX_SWAP_CLIENT_TIMEOUT_MS);
+
+    try {
+      const res = await fetch("/api/mcq-bank/annexure-swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: entry.identifier,
+          language,
+          provider,
+        }),
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Annexure swap failed");
+
+      const removed = data.removed ?? 0;
+      const inserted = data.inserted ?? 0;
+      const annexuresUsed = data.annexuresUsed ?? 0;
+      const breakdown = data.removedBreakdown as
+        | { creative?: number; similar?: number; duplicate?: number; other?: number }
+        | undefined;
+
+      patchAnnexSwap(key, (prev) => ({
+        status: "completed",
+        phase: `Done — removed ${removed}, added ${inserted}`,
+        percent: 100,
+        hidden: false,
+        result: { removed, inserted, annexuresUsed },
+        logs: [
+          ...prev.logs,
+          `${new Date().toLocaleTimeString()}  Model returned — writing bank`,
+          `${new Date().toLocaleTimeString()}  Removed ${removed} (creative ${breakdown?.creative ?? breakdown?.other ?? 0}, similar ${breakdown?.similar ?? 0}, duplicate ${breakdown?.duplicate ?? 0})`,
+          `${new Date().toLocaleTimeString()}  Added ${inserted} from ${annexuresUsed} annexure${annexuresUsed === 1 ? "" : "s"}`,
+        ].slice(-12),
+      }));
+      setRefreshKey((k) => k + 1);
+
+      const dismissTimer = window.setTimeout(() => dismissAnnexSwap(key), 14_000);
+      annexSwapTimersRef.current.set(key, dismissTimer);
+    } catch (e) {
+      const aborted = e instanceof DOMException && e.name === "AbortError";
+      const message = aborted
+        ? `Timed out after ${Math.round(ANNEX_SWAP_CLIENT_TIMEOUT_MS / 60000)} minutes — Codex/CLI did not finish. Try Claude or Gemini, or retry.`
+        : e instanceof Error
+          ? e.message
+          : "Annexure swap failed";
+      patchAnnexSwap(key, (prev) => ({
+        status: "error",
+        phase: aborted ? "Timed out" : "Annexure swap failed",
+        percent: prev.percent,
+        hidden: false,
+        error: message,
+        logs: [...prev.logs, `${new Date().toLocaleTimeString()}  Error: ${message}`].slice(-12),
+      }));
+    } finally {
+      window.clearInterval(milestoneId);
+      window.clearTimeout(timeoutId);
+    }
+  }, [annexSwapTarget, selectedProvider, patchAnnexSwap, dismissAnnexSwap]);
+
+  // Clear annex-swap dismiss timers on unmount.
+  useEffect(() => {
+    const timers = annexSwapTimersRef.current;
+    return () => {
+      timers.forEach((id) => window.clearTimeout(id));
+      timers.clear();
+    };
+  }, []);
+
+
   const closeGenModal = useCallback(() => {
     setGenModalEntry(null);
   }, []);
@@ -1938,6 +2376,12 @@ export function MCQBankClient() {
       if (sortCol === "identifier") cmp = a.identifier.localeCompare(b.identifier);
       else if (sortCol === "name") cmp = a.sopName.localeCompare(b.sopName);
       else if (sortCol === "dept") cmp = a.department.localeCompare(b.department);
+      else if (sortCol === "annexure") {
+        // "none" / missing count sorts as 0; ties break by status (used > linked-not-used).
+        const rank = (s?: McqAnnexureStatus) => (s === "included" ? 2 : s === "linked-not-used" ? 1 : 0);
+        cmp = (a.annexureCount ?? 0) - (b.annexureCount ?? 0);
+        if (cmp === 0) cmp = rank(a.annexureStatus) - rank(b.annexureStatus);
+      }
       else if (sortCol === "lang") cmp = a.langCode.localeCompare(b.langCode);
       else if (sortCol === "questions" || sortCol === "totalMcqs") cmp = a.totalMcqs - b.totalMcqs;
       else if (sortCol === "enMcqCount") cmp = a.enMcqCount - b.enMcqCount;
@@ -2045,7 +2489,21 @@ export function MCQBankClient() {
         />
       )}
 
-      <McqGenProgressToast items={activeGenToasts} onOpen={setGenModalEntry} />
+      {(activeGenToasts.length > 0 || annexSwapProgress.some((p) => !p.hidden)) && (
+        <div className="fixed bottom-4 right-4 z-[75] flex max-w-sm flex-col gap-2 pointer-events-none">
+          {annexSwapProgress.filter((p) => !p.hidden).map((progress) => (
+            <div key={progress.key} className="pointer-events-auto animate-in slide-in-from-bottom-2 fade-in duration-300">
+              <AnnexSwapProgressCard
+                progress={progress}
+                compact
+                onDismiss={() => dismissAnnexSwap(progress.key)}
+                onHide={() => hideAnnexSwap(progress.key)}
+              />
+            </div>
+          ))}
+          <McqGenProgressToast items={activeGenToasts} onOpen={setGenModalEntry} />
+        </div>
+      )}
 
       {/* Regenerate password prompt — gates the destructive "archive + regenerate"
           action behind a password so it isn't triggered by an accidental click. */}
@@ -2154,6 +2612,51 @@ export function MCQBankClient() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Annexure swap confirm — removes ~15 duplicate/similar MCQs and generates
+          replacements from the linked annexures. */}
+      {annexSwapTarget && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setAnnexSwapTarget(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-1 flex items-center gap-2">
+              <Paperclip className="h-4 w-4 text-teal-600" />
+              <h3 className="text-sm font-bold text-gray-800">Swap in annexure MCQs</h3>
+            </div>
+            <p className="mb-4 text-xs leading-relaxed text-gray-500">
+              This removes up to <span className="font-semibold text-gray-700">15</span>{" "}
+              {annexSwapTarget.language === "Gujarati" ? "Gujarati" : "English"} MCQs for{" "}
+              <span className="font-semibold text-gray-700">{displaySopCode(annexSwapTarget.entry.identifier)}</span>{" "}
+              — duplicate and similar questions only. Creative-fill, unique SOP MCQs, approved, and
+              existing annexure questions stay. Fresh questions are generated from linked annexures via{" "}
+              <span className="font-semibold text-gray-700">{selectedProvider}</span>
+              {selectedProvider === "codex" ? " (Codex swaps 8 at a time for speed)" : ""}. Progress
+              and logs appear in the bottom-right panel while it runs.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAnnexSwapTarget(null)}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmAnnexureSwap()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
+              >
+                <Paperclip className="h-3.5 w-3.5" /> Swap MCQs
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2601,6 +3104,7 @@ export function MCQBankClient() {
                         ["identifier", "SOP No."],
                         ["name", "SOP Name"],
                         ["dept", "Dept"],
+                        ["annexure", "Annex"],
                         ["lang", "Lang"],
                         ["totalMcqs", "Total MCQs"],
                         ["enMcqCount", "ENG MCQs"],
@@ -2626,7 +3130,7 @@ export function MCQBankClient() {
                     {regLoading ? (
                       [...Array(8)].map((_, i) => (
                         <tr key={i} className="border-b border-gray-200">
-                          {[...Array(13)].map((_, j) => (
+                          {[...Array(14)].map((_, j) => (
                             <td key={j} className="px-3 py-3">
                               <div className="h-3 animate-pulse rounded bg-gray-200" />
                             </td>
@@ -2635,7 +3139,7 @@ export function MCQBankClient() {
                       ))
                     ) : filteredEntries.length === 0 ? (
                       <tr>
-                        <td colSpan={13} className="text-center py-12 text-gray-500 text-sm">
+                        <td colSpan={14} className="text-center py-12 text-gray-500 text-sm">
                           No MCQ banks match the current filters.
                         </td>
                       </tr>
@@ -2651,6 +3155,18 @@ export function MCQBankClient() {
                         onDeleteRequest={requestDelete}
                         onOpenProgress={setGenModalEntry}
                         onStop={(e) => void stopGeneration(e)}
+                        onAnnexureSwap={requestAnnexureSwap}
+                        annexureSwapLang={
+                          annexSwapProgress.some(
+                            (p) => p.key === `${entry.id}::English` && p.status === "running",
+                          )
+                            ? "English"
+                            : annexSwapProgress.some(
+                                  (p) => p.key === `${entry.id}::Gujarati` && p.status === "running",
+                                )
+                              ? "Gujarati"
+                              : null
+                        }
                         genStatus={genStatus[entry.id]}
                       />
                     ))}
